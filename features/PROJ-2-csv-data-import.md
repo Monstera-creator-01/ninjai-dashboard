@@ -1,6 +1,6 @@
 # PROJ-2: CSV Data Import (Heyreach)
 
-## Status: Planned
+## Status: In Progress
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-13
 
@@ -54,7 +54,39 @@
 ---
 
 ## Tech Design (Solution Architect)
-_To be added by /architecture_
+
+### Architecture Overview
+Two-stage CSV processing: client-side parse for instant validation feedback, then server-side re-validation and upsert into Supabase.
+
+### New Files
+| File | Role |
+|---|---|
+| `src/app/dashboard/import/page.tsx` | Server component — fetches upload history, renders upload zone + history table |
+| `src/components/csv-upload-zone.tsx` | Client component — drag-and-drop, PapaParse validation, fetch to API |
+| `src/components/csv-upload-zone-with-refresh.tsx` | Thin client wrapper — calls `router.refresh()` on upload complete |
+| `src/components/upload-history-table.tsx` | Renders shadcn Table with upload history rows |
+| `src/app/api/import/route.ts` | POST handler — auth check, CSV validation, upsert, history log |
+| `supabase/migrations/20260313_create_import_tables.sql` | Creates `daily_metrics`, `conversations`, `upload_history` tables |
+
+### Database Tables
+- **`daily_metrics`** — unique key: `(workspace, date)`, upsert on conflict
+- **`conversations`** — unique key: `conversation_id`, upsert on conflict
+- **`upload_history`** — append-only audit log (id, filename, csv_type, row_count, status, uploaded_by, uploaded_at)
+
+### RLS Policies
+All three tables: SELECT for authenticated users only. INSERT/UPDATE/DELETE blocked — writes via service role admin client (same pattern as PROJ-1 invite endpoint).
+
+### New Dependency
+- `papaparse` + `@types/papaparse` — CSV parsing library (browser + Node.js)
+
+### Auto-Detection
+CSV type detected by comparing column headers against two known schemas (ACTIVITY_METRICS_COLUMNS vs CONVERSATION_COLUMNS). Extra columns ignored. Missing required columns reported with specific names.
+
+### Data Flow
+1. File selected → PapaParse validates client-side (file size, headers, row count)
+2. Upload button → POST to `/api/import` as `multipart/form-data`
+3. Server: auth check → re-parse → detect type → upsert in batches of 500 → log to `upload_history`
+4. Response → UI shows row count result; `router.refresh()` re-fetches server component data
 
 ## QA Test Results
 _To be added by /qa_
