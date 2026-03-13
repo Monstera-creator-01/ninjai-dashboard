@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { rateLimit } from "@/lib/rate-limit";
 import Papa from "papaparse";
+import { z } from "zod";
 
 // Required columns for each CSV type
 const ACTIVITY_METRICS_COLUMNS = [
@@ -53,6 +55,13 @@ const CONVERSATION_COLUMNS = [
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const BATCH_SIZE = 500;
 
+const fileSchema = z.object({
+  name: z.string().refine((n) => n.toLowerCase().endsWith(".csv"), {
+    message: "Only .csv files are accepted",
+  }),
+  size: z.number().max(MAX_FILE_SIZE, "File exceeds 10MB limit"),
+});
+
 type CsvType = "activity_metrics" | "conversation_data";
 
 function detectCsvType(headers: string[]): CsvType | null {
@@ -94,10 +103,23 @@ function parseFloatSafe(value: string | undefined): number {
   return isNaN(n) ? 0 : n;
 }
 
+function parseRate(value: string | undefined): number {
+  const n = parseFloatSafe(value);
+  return Math.min(Math.max(n, 0), 999.99);
+}
+
 function parseTimestamp(value: string | undefined): string | null {
   if (!value || value.trim() === "") return null;
   const d = new Date(value.trim());
   return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+function validateDate(value: string): boolean {
+  if (!ISO_DATE_REGEX.test(value)) return false;
+  const d = new Date(value);
+  return !isNaN(d.getTime());
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -116,11 +138,9 @@ function buildActivityRow(row: Record<string, any>) {
     total_inmail_replies: parseIntSafe(row["total_inmail_replies"]),
     connections_sent: parseIntSafe(row["connections_sent"]),
     connections_accepted: parseIntSafe(row["connections_accepted"]),
-    message_reply_rate: parseFloatSafe(row["message_reply_rate"]),
-    inmail_reply_rate: parseFloatSafe(row["inmail_reply_rate"]),
-    connection_acceptance_rate: parseFloatSafe(
-      row["connection_acceptance_rate"]
-    ),
+    message_reply_rate: parseRate(row["message_reply_rate"]),
+    inmail_reply_rate: parseRate(row["inmail_reply_rate"]),
+    connection_acceptance_rate: parseRate(row["connection_acceptance_rate"]),
     updated_at: new Date().toISOString(),
   };
 }
@@ -189,6 +209,17 @@ function buildConversationRow(row: Record<string, any>) {
   };
 }
 
+async function logUploadHistory(
+  client: ReturnType<typeof createAdminClient>,
+  data: Record<string, unknown>
+) {
+  try {
+    await client.from("upload_history").insert(data);
+  } catch {
+    // Swallow history logging errors to avoid masking the original result
+  }
+}
+
 export async function POST(request: NextRequest) {
   // 1. Auth check
   const supabase = await createClient();
@@ -198,6 +229,18 @@ export async function POST(request: NextRequest) {
 
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Rate limit: 10 uploads per minute per user
+  const { success: withinLimit } = rateLimit(`import:${user.id}`, {
+    maxRequests: 10,
+    windowMs: 60 * 1000,
+  });
+  if (!withinLimit) {
+    return NextResponse.json(
+      { error: "Too many uploads. Please wait a moment and try again." },
+      { status: 429 }
+    );
   }
 
   // 2. Parse multipart form
@@ -216,14 +259,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
   }
 
-  // 3. File size check
-  if (file.size > MAX_FILE_SIZE) {
-    return NextResponse.json(
-      {
-        error: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 10MB.`,
-      },
-      { status: 400 }
-    );
+  // 3. Validate file with Zod
+  const fileValidation = fileSchema.safeParse({
+    name: file.name,
+    size: file.size,
+  });
+  if (!fileValidation.success) {
+    const message = fileValidation.error.issues[0]?.message ?? "Invalid file";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 
   // 4. Parse CSV server-side
@@ -232,7 +275,7 @@ export async function POST(request: NextRequest) {
   const parsed = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
+    transformHeader: (h) => h.trim().toLowerCase(),
   });
 
   const headers = parsed.meta.fields ?? [];
@@ -267,75 +310,75 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const adminClient = createAdminClient();
-  let totalInserted = 0;
-  let totalUpdated = 0;
-
-  // 6. Upsert in batches
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, i + BATCH_SIZE);
-
-    if (csvType === "activity_metrics") {
-      const batchRows = batch.map(buildActivityRow);
-      const { error } = await adminClient
-        .from("daily_metrics")
-        .upsert(batchRows, { onConflict: "workspace,date", count: "exact" });
-
-      if (error) {
-        await adminClient.from("upload_history").insert({
-          filename: file.name,
-          csv_type: csvType,
-          row_count: rows.length,
-          rows_inserted: totalInserted,
-          rows_updated: totalUpdated,
-          status: "error",
-          error_message: error.message,
-          uploaded_by: user.id,
-        });
-        return NextResponse.json(
-          { error: `Database error: ${error.message}` },
-          { status: 500 }
-        );
+  // 6. Validate dates for activity metrics
+  if (csvType === "activity_metrics") {
+    const invalidDateRows: number[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const dateVal = String(rows[i]["date"] ?? "").trim();
+      if (!validateDate(dateVal)) {
+        invalidDateRows.push(i + 2); // +2 for 1-indexed + header row
+        if (invalidDateRows.length >= 5) break;
       }
-      // Supabase upsert doesn't return exact inserted/updated counts easily,
-      // so we approximate: batch size contributed to either insert or update
-      totalInserted += batch.length;
-    } else {
-      const batchRows = batch.map(buildConversationRow);
-      const { error } = await adminClient
-        .from("conversations")
-        .upsert(batchRows, {
-          onConflict: "conversation_id",
-          count: "exact",
-        });
-
-      if (error) {
-        await adminClient.from("upload_history").insert({
-          filename: file.name,
-          csv_type: csvType,
-          row_count: rows.length,
-          rows_inserted: totalInserted,
-          rows_updated: totalUpdated,
-          status: "error",
-          error_message: error.message,
-          uploaded_by: user.id,
-        });
-        return NextResponse.json(
-          { error: `Database error: ${error.message}` },
-          { status: 500 }
-        );
-      }
-      totalInserted += batch.length;
+    }
+    if (invalidDateRows.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Invalid date format on row${invalidDateRows.length > 1 ? "s" : ""} ${invalidDateRows.join(", ")}. Expected YYYY-MM-DD format (e.g., 2026-01-15).`,
+        },
+        { status: 400 }
+      );
     }
   }
 
-  // 7. Log successful upload
-  await adminClient.from("upload_history").insert({
+  const adminClient = createAdminClient();
+  let totalProcessed = 0;
+
+  // 7. Upsert in batches
+  const table =
+    csvType === "activity_metrics" ? "daily_metrics" : "conversations";
+  const onConflict =
+    csvType === "activity_metrics" ? "workspace,date" : "conversation_id";
+
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    const batchRows =
+      csvType === "activity_metrics"
+        ? batch.map(buildActivityRow)
+        : batch.map(buildConversationRow);
+
+    const { error } = await adminClient
+      .from(table)
+      .upsert(batchRows, { onConflict, count: "exact" });
+
+    if (error) {
+      const errorDetail =
+        totalProcessed > 0
+          ? `Database error: ${error.message}. ${totalProcessed} of ${rows.length} rows were committed before the error.`
+          : `Database error: ${error.message}`;
+
+      await logUploadHistory(adminClient, {
+        filename: file.name,
+        csv_type: csvType,
+        row_count: rows.length,
+        rows_inserted: totalProcessed,
+        rows_updated: 0,
+        status: "error",
+        error_message: errorDetail,
+        uploaded_by: user.id,
+      });
+
+      return NextResponse.json({ error: errorDetail }, { status: 500 });
+    }
+    totalProcessed += batch.length;
+  }
+
+  // 8. Log successful upload
+  await logUploadHistory(adminClient, {
     filename: file.name,
     csv_type: csvType,
     row_count: rows.length,
-    rows_inserted: totalInserted,
-    rows_updated: totalUpdated,
+    rows_inserted: totalProcessed,
+    rows_updated: 0,
     status: "success",
     uploaded_by: user.id,
   });
@@ -344,7 +387,6 @@ export async function POST(request: NextRequest) {
     success: true,
     csvType,
     rowCount: rows.length,
-    inserted: totalInserted,
-    updated: totalUpdated,
+    processed: totalProcessed,
   });
 }

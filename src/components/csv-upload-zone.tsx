@@ -69,8 +69,7 @@ interface ValidationResult {
 
 interface UploadResult {
   rowCount: number;
-  inserted: number;
-  updated: number;
+  processed: number;
   csvType: CsvType;
 }
 
@@ -110,55 +109,46 @@ function validateFile(file: File): Promise<ValidationResult> {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
-      preview: 2, // Just need headers + 1 row to validate, full parse for row count
-      complete: () => {
-        // Re-parse without preview to get accurate row count
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (fullResult) => {
-            const headers = fullResult.meta.fields ?? [];
-            const rowCount = fullResult.data.length;
-            const errors: string[] = [];
+      complete: (result) => {
+        const headers = result.meta.fields ?? [];
+        const rowCount = result.data.length;
+        const errors: string[] = [];
 
-            if (rowCount === 0) {
-              errors.push("No data rows found. The file appears to be empty.");
-              resolve({ valid: false, csvType: null, rowCount: 0, errors });
-              return;
-            }
+        if (rowCount === 0) {
+          errors.push("No data rows found. The file appears to be empty.");
+          resolve({ valid: false, csvType: null, rowCount: 0, errors });
+          return;
+        }
 
-            const csvType = detectCsvType(headers);
+        const csvType = detectCsvType(headers);
 
-            if (!csvType) {
-              // Show which required columns are missing for the closer match
-              const missingActivity = ACTIVITY_METRICS_COLUMNS.filter(
-                (col) =>
-                  !headers
-                    .map((h) => h.trim().toLowerCase())
-                    .includes(col.toLowerCase())
-              );
-              const missingConv = CONVERSATION_COLUMNS.filter(
-                (col) =>
-                  !headers
-                    .map((h) => h.trim().toLowerCase())
-                    .includes(col.toLowerCase())
-              );
-              const missing =
-                missingActivity.length <= missingConv.length
-                  ? missingActivity
-                  : missingConv;
-              const displayMissing = missing.slice(0, 5);
-              const moreCount = missing.length - displayMissing.length;
-              errors.push(
-                `Unrecognized CSV format. Missing required columns: ${displayMissing.join(", ")}${moreCount > 0 ? ` and ${moreCount} more` : ""}.`
-              );
-              resolve({ valid: false, csvType: null, rowCount, errors });
-              return;
-            }
+        if (!csvType) {
+          const missingActivity = ACTIVITY_METRICS_COLUMNS.filter(
+            (col) =>
+              !headers
+                .map((h) => h.trim().toLowerCase())
+                .includes(col.toLowerCase())
+          );
+          const missingConv = CONVERSATION_COLUMNS.filter(
+            (col) =>
+              !headers
+                .map((h) => h.trim().toLowerCase())
+                .includes(col.toLowerCase())
+          );
+          const missing =
+            missingActivity.length <= missingConv.length
+              ? missingActivity
+              : missingConv;
+          const displayMissing = missing.slice(0, 5);
+          const moreCount = missing.length - displayMissing.length;
+          errors.push(
+            `Unrecognized CSV format. Missing required columns: ${displayMissing.join(", ")}${moreCount > 0 ? ` and ${moreCount} more` : ""}.`
+          );
+          resolve({ valid: false, csvType: null, rowCount, errors });
+          return;
+        }
 
-            resolve({ valid: true, csvType, rowCount, errors: [] });
-          },
-        });
+        resolve({ valid: true, csvType, rowCount, errors: [] });
       },
     });
   });
@@ -231,39 +221,61 @@ export function CsvUploadZone({ onUploadComplete }: CsvUploadZoneProps) {
     if (!selectedFile || !validation?.valid) return;
 
     setIsUploading(true);
-    setUploadProgress(10);
+    setUploadProgress(0);
     setUploadError(null);
 
     const formData = new FormData();
     formData.append("file", selectedFile);
 
-    // Simulate progress while waiting
-    const progressInterval = setInterval(() => {
-      setUploadProgress((prev) => Math.min(prev + 15, 85));
-    }, 400);
-
     try {
-      const response = await fetch("/api/import", {
-        method: "POST",
-        body: formData,
-      });
+      const result = await new Promise<{ ok: boolean; data: Record<string, unknown> }>(
+        (resolve, reject) => {
+          const xhr = new XMLHttpRequest();
 
-      clearInterval(progressInterval);
-      setUploadProgress(100);
+          xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable) {
+              // Upload phase is 0-80%, server processing is 80-100%
+              const pct = Math.round((e.loaded / e.total) * 80);
+              setUploadProgress(pct);
+            }
+          });
 
-      const data = await response.json();
+          xhr.addEventListener("load", () => {
+            setUploadProgress(100);
+            try {
+              const data = JSON.parse(xhr.responseText);
+              resolve({ ok: xhr.status >= 200 && xhr.status < 300, data });
+            } catch {
+              reject(new Error("Invalid server response"));
+            }
+          });
 
-      if (!response.ok) {
-        setUploadError(data.error || "Upload failed. Please try again.");
+          xhr.addEventListener("error", () =>
+            reject(new Error("Network error"))
+          );
+
+          xhr.open("POST", "/api/import");
+          xhr.withCredentials = true;
+          xhr.timeout = 120_000; // 2 minutes
+          xhr.addEventListener("timeout", () =>
+            reject(new Error("Upload timed out"))
+          );
+          xhr.send(formData);
+        }
+      );
+
+      if (!result.ok) {
+        setUploadError(
+          (result.data.error as string) || "Upload failed. Please try again."
+        );
         return;
       }
 
-      setUploadResult(data as UploadResult);
+      setUploadResult(result.data as unknown as UploadResult);
       setSelectedFile(null);
       setValidation(null);
       onUploadComplete?.();
     } catch {
-      clearInterval(progressInterval);
       setUploadError("An unexpected error occurred. Please try again.");
     } finally {
       setIsUploading(false);
@@ -289,10 +301,8 @@ export function CsvUploadZone({ onUploadComplete }: CsvUploadZoneProps) {
                 Import successful
               </p>
               <p className="text-sm text-green-700 dark:text-green-300">
-                {uploadResult.rowCount} rows processed —{" "}
-                {uploadResult.inserted} imported
-                {uploadResult.updated > 0 &&
-                  `, ${uploadResult.updated} updated`}
+                {uploadResult.processed} of {uploadResult.rowCount} rows
+                processed successfully
               </p>
               <button
                 onClick={handleClear}
