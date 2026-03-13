@@ -1,6 +1,6 @@
 # PROJ-2: CSV Data Import (Heyreach)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-13
 
@@ -640,4 +640,12 @@ All 10 fixes are confirmed present in the working-tree files despite not being c
 Recommendation: Run `/deploy` to deploy this feature to production.
 
 ## Deployment
-_To be added by /deploy_
+- **Production URL:** https://ninjai-dashboard.vercel.app/dashboard/import
+- **Deployed:** 2026-03-13
+- **Deployed by:** DevOps Engineer (AI)
+- **Git tag:** v1.2.0-PROJ-2
+- **Commits:**
+  - `cff7fe1` feat(PROJ-2): Implement CSV data import for Heyreach exports
+  - `2e13a42` fix(PROJ-2): Fix 14 bugs from QA audit
+- **Verification:** CSV upload tested in production — 330 rows imported successfully
+- **Known issue:** BUG-15 (Low/P4) — error message tooltips inaccessible on mobile touch devices (accepted, non-blocking)
