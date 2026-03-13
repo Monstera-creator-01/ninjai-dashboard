@@ -1,6 +1,6 @@
 # PROJ-1: Authentication & User Management
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-13
 
@@ -18,7 +18,13 @@
 
 ### Deferred
 - **BUG-10 (Low):** No retry UI for connection errors — nice to have
-- **BUG-11 (Low):** Auth/recovery flow conflict — needs runtime testing to confirm
+- **BUG-11 (Low):** Auth/recovery flow conflict — verified working in runtime testing (2026-03-13)
+
+## Deployment
+- **Production URL:** https://ninjai-dashboard.vercel.app
+- **Deployed:** 2026-03-13
+- **Platform:** Vercel (auto-deploy from GitHub main branch)
+- **Database:** Supabase (sxictdtwwiueegrmdszm)
 
 ## Dependencies
 - None (foundation feature)
