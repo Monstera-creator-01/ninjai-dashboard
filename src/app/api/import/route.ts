@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { rateLimit } from "@/lib/rate-limit";
+import { evaluateFlags } from "@/lib/flag-evaluation";
 import Papa from "papaparse";
 import { z } from "zod";
 
@@ -383,10 +384,24 @@ export async function POST(request: NextRequest) {
     uploaded_by: user.id,
   });
 
+  // 9. Run flag evaluation after activity metrics import
+  // Flag evaluation only runs on activity_metrics uploads since flags are
+  // based on daily metrics data (acceptance rates, reply rates, activity levels).
+  let flagResults = null;
+  if (csvType === "activity_metrics") {
+    try {
+      flagResults = await evaluateFlags(adminClient);
+    } catch {
+      // Flag evaluation errors should not fail the import
+      flagResults = { error: "Flag evaluation encountered an error" };
+    }
+  }
+
   return NextResponse.json({
     success: true,
     csvType,
     rowCount: rows.length,
     processed: totalProcessed,
+    flagEvaluation: flagResults,
   });
 }

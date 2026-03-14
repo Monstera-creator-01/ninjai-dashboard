@@ -22,6 +22,7 @@ import {
   SidebarMenuItem,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
+import { SidebarFlagBadge } from "@/components/sidebar-flag-badge";
 import { UserMenu } from "@/components/user-menu";
 import type { UserProfile } from "@/lib/types";
 
@@ -59,7 +60,7 @@ const navItems = [
     title: "Interventions",
     href: "/dashboard/interventions",
     icon: AlertTriangle,
-    exact: true,
+    exact: false,
   },
 ];
 
@@ -95,7 +96,8 @@ export function AppSidebar({ profile, userEmail }: AppSidebarProps) {
                   >
                     <Link href={item.href}>
                       <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
+                      <span className="flex-1">{item.title}</span>
+                      {item.title === "Interventions" && <SidebarFlagBadge />}
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
