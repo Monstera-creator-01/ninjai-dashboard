@@ -7,6 +7,7 @@ import {
   Upload,
   BarChart3,
   Activity,
+  Gauge,
   AlertTriangle,
 } from "lucide-react";
 import {
@@ -54,6 +55,12 @@ const navItems = [
     title: "Health Review",
     href: "/dashboard/health",
     icon: Activity,
+    exact: true,
+  },
+  {
+    title: "Operator",
+    href: "/dashboard/operator",
+    icon: Gauge,
     exact: true,
   },
   {
