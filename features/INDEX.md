@@ -18,7 +18,7 @@
 | PROJ-4 | Weekly Campaign Health Review (Layer 2) | Deployed | [PROJ-4-weekly-campaign-health-review.md](PROJ-4-weekly-campaign-health-review.md) | 2026-03-13 |
 | PROJ-5 | Weekly Messaging Insight Summary (Layer 3) | Deployed | [PROJ-5-messaging-insight-summary.md](PROJ-5-messaging-insight-summary.md) | 2026-03-13 |
 | PROJ-6 | Segment Comparison Analysis (Layer 4) | Deployed | [PROJ-6-segment-comparison.md](PROJ-6-segment-comparison.md) | 2026-03-13 |
-| PROJ-7 | Account Manager Campaign Summary (Layer 5) | In Review | [PROJ-7-account-manager-summary.md](PROJ-7-account-manager-summary.md) | 2026-03-13 |
+| PROJ-7 | Account Manager Campaign Summary (Layer 5) | Deployed | [PROJ-7-account-manager-summary.md](PROJ-7-account-manager-summary.md) | 2026-03-13 |
 | PROJ-8 | Campaign Intervention Flag System (Layer 6) | Deployed | [PROJ-8-intervention-flag-system.md](PROJ-8-intervention-flag-system.md) | 2026-03-13 |
 | PROJ-9 | Operator Dashboard (Layer 7) | Deployed | [PROJ-9-operator-dashboard.md](PROJ-9-operator-dashboard.md) | 2026-03-13 |
 

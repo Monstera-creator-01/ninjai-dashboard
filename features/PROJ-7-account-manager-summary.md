@@ -1,6 +1,6 @@
 # PROJ-7: Account Manager Campaign Summary (Layer 5)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -537,4 +537,8 @@ All 25+ files specified in the implementation notes exist and are correctly wire
 - Database migration `supabase/migrations/20260314_proj7_am_summary_tables.sql` must be run in Supabase SQL Editor before the feature works in production.
 
 ## Deployment
-_To be added by /deploy_
+- **Deployed:** 2026-03-14
+- **Deployed by:** /deploy skill
+- **Pre-deployment checks:** Build passes, Lint passes, QA approved (8/8 AC, 0 open bugs)
+- **Database migration:** `am_talking_points` + `workspace_assignments` tables created with RLS
+- **Notes:** No critical/high bugs. Rate limiter uses in-memory Map (acceptable for 3-person team).
