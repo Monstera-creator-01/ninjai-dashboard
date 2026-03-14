@@ -1,6 +1,6 @@
 # PROJ-5: Weekly Messaging Insight Summary (Layer 3)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -313,4 +313,7 @@ Neuer Eintrag in `app-sidebar.tsx`:
 - Custom fields parsing assumes `.raw` property structure (has fallback)
 
 ## Deployment
-_To be added by /deploy_
+- **Production URL:** https://ninjai-dashboard.vercel.app/dashboard/messaging
+- **Deployed:** 2026-03-14
+- **Migration:** `conversation_tags` table applied to Supabase production
+- **Commits:** 3 commits pushed to main (docs, implementation + QA fixes)
