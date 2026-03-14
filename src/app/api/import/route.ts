@@ -322,7 +322,7 @@ export async function POST(request: NextRequest) {
 
   const adminClient = createAdminClient();
 
-  // 7. Create upload_history record FIRST to get the ID for tracking
+  // 7. Create upload_history record with 'processing' status
   const { data: historyRecord, error: historyError } = await adminClient
     .from("upload_history")
     .insert({
@@ -331,7 +331,7 @@ export async function POST(request: NextRequest) {
       row_count: rows.length,
       rows_inserted: 0,
       rows_updated: 0,
-      status: "success",
+      status: "processing",
       uploaded_by: user.id,
     })
     .select("id")
@@ -347,22 +347,23 @@ export async function POST(request: NextRequest) {
   const uploadId = historyRecord.id;
   let totalProcessed = 0;
 
-  // 8. Upsert in batches — stamp each row with upload_id
-  const table =
-    csvType === "activity_metrics" ? "daily_metrics" : "conversations";
-  const onConflict =
-    csvType === "activity_metrics" ? "workspace,date" : "conversation_id";
+  // 8. Upsert via RPC — upload_id only set on INSERT, preserved on conflict
+  const rpcName =
+    csvType === "activity_metrics"
+      ? "safe_upsert_daily_metrics"
+      : "safe_upsert_conversations";
 
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     const batchRows =
       csvType === "activity_metrics"
-        ? batch.map((row) => ({ ...buildActivityRow(row), upload_id: uploadId }))
-        : batch.map((row) => ({ ...buildConversationRow(row), upload_id: uploadId }));
+        ? batch.map((row) => buildActivityRow(row))
+        : batch.map((row) => buildConversationRow(row));
 
-    const { error } = await adminClient
-      .from(table)
-      .upsert(batchRows, { onConflict, count: "exact" });
+    const { error } = await adminClient.rpc(rpcName, {
+      p_rows: JSON.stringify(batchRows),
+      p_upload_id: uploadId,
+    });
 
     if (error) {
       const errorDetail =
@@ -370,7 +371,6 @@ export async function POST(request: NextRequest) {
           ? `Database error: ${error.message}. ${totalProcessed} of ${rows.length} rows were committed before the error.`
           : `Database error: ${error.message}`;
 
-      // Update history record with error status
       await adminClient
         .from("upload_history")
         .update({
@@ -385,10 +385,10 @@ export async function POST(request: NextRequest) {
     totalProcessed += batch.length;
   }
 
-  // 9. Update history record with final count
+  // 9. Mark upload as successful with final count
   await adminClient
     .from("upload_history")
-    .update({ rows_inserted: totalProcessed })
+    .update({ rows_inserted: totalProcessed, status: "success" })
     .eq("id", uploadId);
 
   // 10. Run flag evaluation after activity metrics import
@@ -428,6 +428,18 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // BUG-19: Rate limit deletes — 5 per minute per user
+  const { success: withinLimit } = rateLimit(`delete-import:${user.id}`, {
+    maxRequests: 5,
+    windowMs: 60 * 1000,
+  });
+  if (!withinLimit) {
+    return NextResponse.json(
+      { error: "Too many delete requests. Please wait a moment." },
+      { status: 429 }
+    );
+  }
+
   let rawBody: unknown;
   try {
     rawBody = await request.json();
@@ -449,7 +461,7 @@ export async function DELETE(request: NextRequest) {
   // Look up the upload record
   const { data: upload, error: fetchError } = await adminClient
     .from("upload_history")
-    .select("id, csv_type, row_count")
+    .select("id, csv_type, row_count, uploaded_by")
     .eq("id", id)
     .single();
 
@@ -457,14 +469,38 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Upload not found" }, { status: 404 });
   }
 
+  // BUG-20: Authorization — only the uploader or a team_lead can delete
+  if (upload.uploaded_by !== user.id) {
+    const { data: profile } = await adminClient
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+
+    if (profile?.role !== "team_lead") {
+      return NextResponse.json(
+        { error: "You can only delete your own imports" },
+        { status: 403 }
+      );
+    }
+  }
+
   // Delete associated data rows
   const table =
     upload.csv_type === "activity_metrics" ? "daily_metrics" : "conversations";
 
-  const { count: deletedRows } = await adminClient
+  // BUG-21: Check data deletion error before deleting the history record
+  const { count: deletedRows, error: dataDeleteError } = await adminClient
     .from(table)
     .delete({ count: "exact" })
     .eq("upload_id", id);
+
+  if (dataDeleteError) {
+    return NextResponse.json(
+      { error: `Failed to delete data rows: ${dataDeleteError.message}` },
+      { status: 500 }
+    );
+  }
 
   // Delete the upload history record itself
   const { error: deleteError } = await adminClient

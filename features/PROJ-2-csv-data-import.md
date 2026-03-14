@@ -649,3 +649,285 @@ Recommendation: Run `/deploy` to deploy this feature to production.
   - `2e13a42` fix(PROJ-2): Fix 14 bugs from QA audit
 - **Verification:** CSV upload tested in production — 330 rows imported successfully
 - **Known issue:** BUG-15 (Low/P4) — error message tooltips inaccessible on mobile touch devices (accepted, non-blocking)
+
+## QA Test Results (Round 5 -- Delete CSV Imports Feature Audit)
+
+**Tested:** 2026-03-14
+**Tester:** QA Engineer (AI)
+**Commit under test:** `05efc82` feat(PROJ-2): Add ability to delete CSV imports
+**Method:** Static code audit + build/lint verification (no live Supabase instance for runtime testing)
+**Build Status:** PASS (Next.js 16.1.1 Turbopack, zero errors, 19 routes generated)
+**Lint Status:** PASS (zero warnings or errors)
+
+---
+
+### Scope of Changes
+
+The commit modifies two files:
+- `src/app/api/import/route.ts` -- refactored POST handler to create upload_history record first and stamp data rows with `upload_id`; added new DELETE handler
+- `src/components/upload-history-table.tsx` -- converted from server component to client component; added delete button with confirmation dialog, toast feedback, and loading state
+
+---
+
+### Delete Feature Acceptance Criteria
+
+No formal acceptance criteria were defined in the feature spec for the delete capability. The following criteria are inferred from the commit message, code behavior, and reasonable expectations:
+
+| AC# | Criterion | Status | Evidence |
+|-----|-----------|--------|----------|
+| DAC-1 | Each upload history row has a delete button | PASS | `upload-history-table.tsx` line 170-178: Trash2 icon button rendered for every row with `aria-label={Delete import ${row.filename}}`. |
+| DAC-2 | Clicking delete shows a confirmation dialog before proceeding | PASS | `upload-history-table.tsx` line 188-212: AlertDialog with title "Delete Import", description listing filename and row count, Cancel and Delete buttons. Dialog is opened by `setDeleteTarget(row)` on button click. |
+| DAC-3 | Confirmation dialog clearly communicates the destructive action | PASS | Description text: "This will permanently delete [filename] and remove all [N] associated data rows from the database. This action cannot be undone." |
+| DAC-4 | Delete button is styled as destructive | PASS | Delete action button has `className="bg-destructive text-destructive-foreground hover:bg-destructive/90"`. |
+| DAC-5 | Loading state shown during deletion | PASS | `isDeleting` state disables both Cancel and Delete buttons during the operation. Delete button text changes to "Deleting...". |
+| DAC-6 | DELETE API endpoint requires authentication | PASS | `route.ts` line 422-428: calls `supabase.auth.getUser()` and returns 401 if no user. |
+| DAC-7 | DELETE API validates input with Zod | PASS | `route.ts` line 417-419: `deleteSchema = z.object({ id: z.number().int().positive() })`. Input parsed at line 438. |
+| DAC-8 | DELETE API deletes associated data rows from the correct table | PASS | `route.ts` line 461-467: determines table based on `csv_type` ("daily_metrics" or "conversations") and deletes rows where `upload_id` matches. |
+| DAC-9 | DELETE API deletes the upload_history record itself | PASS | `route.ts` line 469-473: deletes from `upload_history` where `id` matches. |
+| DAC-10 | Success toast shown after deletion | PASS | `upload-history-table.tsx` line 87-90: toast with title "Import deleted" and description showing filename and deleted row count. |
+| DAC-11 | Error toast shown on failure | PASS | `upload-history-table.tsx` line 79-84: destructive toast on non-ok response. Line 94-98: destructive toast on network error. |
+| DAC-12 | UI refreshes after successful deletion | PASS | `upload-history-table.tsx` line 92: `router.refresh()` triggers server component re-fetch. |
+| DAC-13 | Flags re-evaluated after activity metrics deletion | PASS | `route.ts` line 482-488: calls `evaluateFlags(adminClient)` when `csv_type === "activity_metrics"`. |
+| DAC-14 | POST handler stamps each data row with upload_id for tracking | PASS | `route.ts` line 360-361: `upload_id: uploadId` spread into every batch row for both activity and conversation types. |
+| DAC-15 | Upload history record created before data insertion | PASS | `route.ts` line 325-345: history record created first with `rows_inserted: 0`, then updated after batches complete. This ensures orphaned data rows can always be traced back to a history record. |
+
+**Result: 15/15 PASS (all inferred acceptance criteria met)**
+
+---
+
+### Bug List (Round 5 -- Delete Feature)
+
+#### BUG-16 (Critical): Missing Database Migration for `upload_id` Column
+
+- **Severity:** Critical
+- **Priority:** P0 -- will cause runtime failures
+- **Files:** `src/app/api/import/route.ts` (lines 360-361, 467), `supabase/migrations/20260313_create_import_tables.sql`
+- **Description:** The commit message states "Migration adds upload_id column to daily_metrics and conversations" but NO migration file was created or modified. The `supabase/migrations/` directory contains only the original migration (`20260313_create_import_tables.sql`) which does NOT include an `upload_id` column on either `daily_metrics` or `conversations`. The code in `route.ts` references `upload_id` in four places: stamping rows on INSERT (lines 360-361) and filtering on DELETE (line 467). If this column does not exist in the database, BOTH the POST (import) and DELETE handlers will fail at runtime with a PostgreSQL error like `column "upload_id" of relation "daily_metrics" does not exist`.
+- **Steps to reproduce:** Attempt to upload any CSV file. The upsert will fail because the `upload_id` column does not exist. Alternatively, attempt to delete an import -- the delete query will fail for the same reason.
+- **Expected:** A migration file (e.g., `20260314_add_upload_id.sql`) exists that runs `ALTER TABLE public.daily_metrics ADD COLUMN upload_id bigint REFERENCES public.upload_history(id) ON DELETE SET NULL;` and the same for `conversations`.
+- **Actual:** No migration file exists. The column was either added manually to the production database (undocumented) or was never added.
+- **Impact:** If deploying to a fresh database or running migrations from scratch, the entire import system (both upload AND delete) is broken. If the column was added manually to production, the migration history is incomplete and any new environment (staging, dev, CI) will fail.
+- **Risk Assessment:** If the column was added manually to production (likely, since the commit implies it was deployed), this is still Critical because: (1) the migration gap makes the system non-reproducible, (2) there is no index on `upload_id` which will cause slow DELETE operations as data grows, and (3) there is no foreign key constraint documented, so orphaned rows are possible.
+- **Fix:** Create a migration file: `supabase/migrations/20260314_add_upload_id.sql` with ALTER TABLE statements adding the column to both tables, adding an index, and optionally adding a foreign key reference to `upload_history(id)`.
+
+#### BUG-17 (High): Upsert with `upload_id` Overwrites Previous Import's Tracking -- Breaks Delete Isolation
+
+- **Severity:** High
+- **Priority:** P1 -- data integrity issue, can cause unintended mass data deletion
+- **Description:** The POST handler uses UPSERT (on conflict update) and stamps every row with the new `upload_id`. If a user uploads a CSV that contains rows overlapping with a previous import (same workspace+date for activity metrics, or same conversation_id for conversations), the upsert will UPDATE the existing row's `upload_id` to the new import's ID. This means the original import's upload_history record now has zero associated data rows (they were reassigned), and deleting the NEW import will delete rows that existed before it.
+- **Steps to reproduce:**
+  1. Upload `file_A.csv` containing workspace "UCP" dates 2026-03-01 through 2026-03-07 (7 rows). upload_id = 1.
+  2. Upload `file_B.csv` containing workspace "UCP" dates 2026-03-05 through 2026-03-10 (6 rows). upload_id = 2. The upsert updates dates 03-05, 03-06, 03-07 to upload_id = 2.
+  3. Delete import #2 (file_B). This deletes ALL 6 rows with upload_id = 2, including the 3 rows from 03-05 to 03-07 that originally belonged to file_A.
+  4. Result: Dates 03-05, 03-06, 03-07 are now deleted even though they came from file_A. Import #1 still shows "7 rows" in history but only 4 rows remain.
+- **Expected:** Deleting import #2 should only remove the NET NEW rows it added (03-08, 03-09, 03-10), not rows that existed before.
+- **Actual:** All rows with `upload_id = 2` are deleted, including rows that were merely updated (not created) by that import.
+- **Impact:** This is particularly dangerous for the common workflow of re-uploading a "lifetime" CSV that contains all historical data. The latest import would claim ownership of ALL rows, and deleting it would wipe the entire dataset.
+- **Fix suggestion:** Consider one of: (1) Track `created_by_upload_id` separately from `last_updated_by_upload_id` so delete only removes rows created by that specific import. (2) Only delete rows that would not exist without this import (set `upload_id` only on INSERT, not on UPDATE). (3) Clearly document that delete removes all rows associated with the import including those that were updated, and warn the user in the confirmation dialog.
+
+#### BUG-18 (High): AlertDialogAction Default Behavior Causes Dialog to Close Before handleDelete Completes
+
+- **Severity:** High
+- **Priority:** P1 -- can cause the dialog to close while deletion is still in progress
+- **Description:** The Radix UI `AlertDialogAction` component automatically closes the dialog when clicked (this is its default behavior -- it acts like a form submit that closes the dialog). The `handleDelete` function is passed as an `onClick` handler, but the dialog will close immediately when the button is clicked, BEFORE the async `handleDelete` completes. This means:
+  1. The `isDeleting` state and "Deleting..." text will never be visible to the user because the dialog closes instantly.
+  2. The `setDeleteTarget(null)` in the `finally` block of `handleDelete` is redundant since the dialog's `onOpenChange` already sets it to null.
+  3. If the delete fails, the error toast will appear but the user has no indication they need to retry (the dialog is already gone).
+- **Steps to reproduce:** Click the delete button in the confirmation dialog. Observe that the dialog closes immediately without showing "Deleting..." state.
+- **Expected:** The dialog stays open during deletion, showing "Deleting..." state, and only closes on success. On failure, the dialog could remain open with an error state.
+- **Actual:** Dialog closes instantly on click. The `disabled={isDeleting}` and "Deleting..." text are dead code that never render.
+- **Fix suggestion:** Prevent the default AlertDialogAction close behavior by using `event.preventDefault()` in the onClick handler, then manually close the dialog after the async operation completes. Example: `onClick={(e) => { e.preventDefault(); handleDelete(); }}`. Alternatively, use a regular Button inside the AlertDialogFooter instead of AlertDialogAction.
+
+#### BUG-19 (Medium): No Rate Limiting on DELETE Endpoint
+
+- **Severity:** Medium
+- **Priority:** P2 -- security concern
+- **File:** `src/app/api/import/route.ts` DELETE handler (line 421-495)
+- **Description:** The POST handler has rate limiting (10 uploads/min/user via `rateLimit()`) but the DELETE handler has no rate limiting at all. An authenticated user (or an attacker with a stolen session) could rapidly delete all import records by scripting DELETE requests. While the data impact is limited to what was uploaded, this could be used to vandalize the dashboard data.
+- **Steps to reproduce:** Send rapid DELETE requests with sequential IDs to `/api/import`.
+- **Expected:** Rate limiting prevents rapid bulk deletion.
+- **Actual:** No rate limiting; unlimited deletions are accepted.
+- **Fix suggestion:** Add `rateLimit(`delete-import:${user.id}`, { maxRequests: 10, windowMs: 60000 })` at the top of the DELETE handler.
+
+#### BUG-20 (Medium): No Authorization Check -- Any Authenticated User Can Delete Any Import
+
+- **Severity:** Medium
+- **Priority:** P2 -- authorization gap
+- **File:** `src/app/api/import/route.ts` DELETE handler (line 447-454)
+- **Description:** The DELETE handler looks up the upload record by ID using the admin client (bypassing RLS) and does not verify that the requesting user is the one who uploaded it, or has a specific role (e.g., team_lead). Any authenticated user can delete any import, including imports uploaded by other team members. While the current team is 3 people and all are trusted, this deviates from the principle of least privilege.
+- **Steps to reproduce:** User A uploads a CSV. User B sends a DELETE request with User A's upload ID.
+- **Expected:** Either only the uploader can delete their own imports, or only team_leads can delete any import.
+- **Actual:** Any authenticated user can delete any import.
+- **Impact:** Low for a 3-person trusted team. Medium if the team grows or if a session is compromised.
+- **Fix suggestion:** Either: (1) Verify `upload.uploaded_by === user.id` before proceeding, or (2) Require team_lead role for deletion, or (3) Accept the current behavior but document it as intentional.
+
+#### BUG-21 (Medium): Non-Atomic Delete -- Data Rows Deleted But History Record Deletion Fails
+
+- **Severity:** Medium
+- **Priority:** P2 -- data integrity
+- **File:** `src/app/api/import/route.ts` lines 464-479
+- **Description:** The DELETE handler first deletes data rows from `daily_metrics`/`conversations` (line 464-467), then deletes the `upload_history` record (line 470-473). If the first operation succeeds but the second fails, the data rows are permanently deleted but the upload_history record remains, pointing to data that no longer exists. There is no error handling on the data row deletion (line 464-467 -- the result `error` is not checked), and no transaction wrapping both operations.
+- **Steps to reproduce:** Difficult to trigger in practice but possible if: the database connection drops between the two operations, or there's a constraint on `upload_history` preventing deletion (e.g., a future foreign key reference).
+- **Expected:** Both operations succeed or both are rolled back (atomic transaction).
+- **Actual:** Data rows deleted first without error checking, then history record deletion attempted separately. Partial failure leaves inconsistent state.
+- **Fix suggestion:** (1) Check the error on the data row deletion before proceeding. (2) Consider using a database transaction (Supabase RPC with `BEGIN/COMMIT/ROLLBACK`) or at minimum reverse the order (delete history first, then data rows) so that an orphaned history record is the lesser of two evils vs orphaned data rows with no parent.
+
+#### BUG-22 (Medium): `upload_id` Column Likely Has No Index -- Slow DELETE Queries at Scale
+
+- **Severity:** Medium
+- **Priority:** P2 -- performance
+- **Description:** The DELETE handler queries `daily_metrics` or `conversations` using `.eq("upload_id", id)`. Since there is no migration file, we cannot confirm whether an index exists on `upload_id`. Without an index, this query performs a full table scan on every delete operation. As the `daily_metrics` table grows (potentially thousands of rows across many workspaces and dates), delete operations will become progressively slower.
+- **Fix suggestion:** The migration file (per BUG-16) should include `CREATE INDEX idx_daily_metrics_upload_id ON public.daily_metrics (upload_id);` and the same for `conversations`.
+
+#### BUG-23 (Low): Delete Button Visible for Error-Status Imports -- Deleting Errors May Delete Zero Rows
+
+- **Severity:** Low
+- **Priority:** P3 -- UX confusion
+- **File:** `src/components/upload-history-table.tsx` line 170-178
+- **Description:** The delete button is shown for ALL upload history rows, including those with status "error". An error-status import may have zero data rows associated with it (if the error occurred before any batches were committed), or may have partial data rows (if the error occurred mid-batch). Deleting an error import will show "Removed [filename] and 0 data rows" which is confusing. The confirmation dialog also states "remove all [N] associated data rows" where N is `row_count` (the total row count from the CSV, not the number actually persisted), which may be misleading for error imports.
+- **Steps to reproduce:** Upload a CSV that fails validation or fails mid-import. The error entry appears in the history. Click delete on the error entry. The confirmation says it will remove N rows, but it actually removes 0 (or fewer than N).
+- **Expected:** Either: (1) the confirmation dialog shows the actual persisted row count (which may be 0 for errors), or (2) error imports are handled differently (e.g., different confirmation text, or auto-deletable without full confirmation).
+- **Actual:** Confirmation dialog uses `row_count` (from CSV) rather than `rows_inserted` (actually persisted) for the row count display.
+
+#### BUG-24 (Low): POST Handler Sets `status: "success"` on Initial Insert Before Data is Written
+
+- **Severity:** Low
+- **Priority:** P3 -- data inconsistency
+- **File:** `src/app/api/import/route.ts` line 334
+- **Description:** The upload_history record is created with `status: "success"` at line 334, BEFORE any data rows are inserted. If the server crashes or the request is interrupted between the history insert (line 326) and the first batch upsert (line 363), the upload_history table will contain a record marked "success" with `rows_inserted: 0` and no actual data in the target table. Previously (before this commit), the history record was created AFTER all data was written, which was safer.
+- **Steps to reproduce:** Kill the server process immediately after the upload_history record is created but before the first batch completes.
+- **Expected:** The record should be marked "processing" or "pending" until data is fully written, then updated to "success" or "error".
+- **Actual:** Record is immediately marked "success" even though zero rows have been written yet.
+- **Fix suggestion:** Create the record with `status: "processing"` (requires updating the CHECK constraint) and update to "success" after all batches complete, or create with `status: "error"` and update to "success" only on completion.
+
+---
+
+### Security Audit (Delete Feature)
+
+#### Authentication and Authorization
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| DELETE endpoint requires authentication | PASS | `route.ts` line 422-428: calls `supabase.auth.getUser()`, returns 401 if no user. |
+| Uses `getUser()` not `getSession()` for auth | PASS | Line 424: `supabase.auth.getUser()` validates JWT server-side. |
+| Authorization check (who can delete) | FAIL | No ownership or role check. Any authenticated user can delete any import. See BUG-20. |
+| Rate limiting on DELETE | FAIL | No rate limiting. See BUG-19. |
+
+#### Input Validation
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Request body validated with Zod | PASS | `deleteSchema` validates `id` as positive integer. |
+| SQL injection via ID parameter | SAFE | Parameterized query via Supabase client `.eq("id", id)`. |
+| ID enumeration / IDOR | PARTIAL | Upload IDs are sequential integers (auto-incrementing bigint). An attacker can guess valid IDs. Combined with no authorization check (BUG-20), this allows any user to enumerate and delete all imports. Low risk for 3-person team. |
+
+#### Data Integrity
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Cascade delete correctness | FAIL | Upsert overwrites `upload_id`, breaking tracking. See BUG-17. |
+| Atomic delete operation | FAIL | Two-step delete without transaction or error checking on first step. See BUG-21. |
+| Flag re-evaluation after delete | PASS | Line 482-488: `evaluateFlags()` called when `csv_type === "activity_metrics"`. |
+| Upload history integrity | FAIL | Initial record created with `status: "success"` before data written. See BUG-24. |
+
+#### CSRF Protection
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| CSRF on DELETE endpoint | PARTIAL | Uses DELETE method with JSON body. Browsers' same-origin policy prevents cross-origin JSON DELETE requests from simple forms. However, a malicious page could use `fetch()` with `credentials: 'include'` from the same origin. Low risk for internal tool. |
+
+---
+
+### Regression Testing
+
+#### PROJ-2 Upload (POST) Regression
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| CSV upload still works (code path) | CONDITIONAL | The POST handler now creates the upload_history record FIRST and stamps data rows with `upload_id`. This is a functional change. If the `upload_id` column exists in the database, uploads work correctly. If it does not exist, ALL uploads are broken (see BUG-16). |
+| Error handling on partial batch failure | PASS | Line 373-381: error status update now uses `.update()` on existing record instead of inserting a new one. Logic is correct. |
+| Flag evaluation after import | PASS | Line 394-402: unchanged logic, still triggers for activity_metrics. |
+| Rate limiting on POST | PASS | Line 225-234: rate limiting still present and unchanged. |
+| File validation (Zod) | PASS | Line 253-260: unchanged. |
+| Date validation | PASS | Line 304-321: unchanged. |
+
+#### PROJ-3 Campaign Intelligence Snapshot Regression
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Snapshot API reads daily_metrics | PASS | `src/app/api/campaigns/snapshot/route.ts` queries `daily_metrics` by date range. Does not reference `upload_id`. No regression. |
+| Campaign detail API reads daily_metrics | PASS | `src/app/api/campaigns/detail/route.ts` queries `daily_metrics` by workspace and date. Does not reference `upload_id`. No regression. |
+| Data availability after delete | NOTE | If a user deletes an import, the Campaign Intelligence Snapshot will immediately reflect the data loss. This is expected behavior but could surprise users who don't realize that deleting an import removes the underlying metrics data, not just the history record. |
+
+#### PROJ-8 Intervention Flag System Regression
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Flag evaluation after import | PASS | Still triggered in POST handler line 396. |
+| Flag evaluation after delete | PASS | New: triggered in DELETE handler line 482. Correctly re-evaluates when activity metrics are deleted. |
+| Flag data integrity | PASS | Flags are independent of `upload_id`. Deleting import data triggers re-evaluation which may auto-resolve flags if the triggering data is removed. This is correct behavior. |
+
+#### PROJ-1 Authentication Regression
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Auth unchanged | PASS | No modifications to auth files, middleware, or login flow. |
+
+**Regression Result: No regressions detected in PROJ-1, PROJ-3, or PROJ-8. PROJ-2 POST handler has a conditional regression dependent on BUG-16 (missing migration).**
+
+---
+
+### Cross-Browser Compatibility (Delete Feature)
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| AlertDialog component | COMPATIBLE | Uses Radix UI AlertDialog primitives, which support Chrome, Firefox, Safari, Edge. |
+| Fetch API for DELETE | COMPATIBLE | Standard `fetch()` with DELETE method supported in all modern browsers. |
+| Toast notifications | COMPATIBLE | Uses project's custom `useToast` hook, which is based on Radix primitives. |
+| Lucide React icons (Trash2) | COMPATIBLE | SVG-based, renders correctly in all browsers. |
+
+---
+
+### Responsive Design (Delete Feature)
+
+| Breakpoint | Status | Evidence |
+|------------|--------|----------|
+| 375px (mobile) | PASS | Delete button is `h-8 w-8` icon button, fits in table cell. AlertDialog has `max-w-lg` which adapts to mobile. Footer uses `flex-col-reverse sm:flex-row` for mobile stacking. |
+| 768px (tablet) | PASS | Table with 7 columns (including delete) may be tight but shadcn Table handles overflow. |
+| 1440px (desktop) | PASS | Delete column has `w-[50px]` fixed width. Adequate space. |
+
+---
+
+### Summary of All New Bugs (Round 5)
+
+| Bug | Severity | Priority | Status | Description |
+|-----|----------|----------|--------|-------------|
+| BUG-16 | Critical | P0 | OPEN | Missing database migration for `upload_id` column on `daily_metrics` and `conversations` tables. Will cause runtime failures if column does not exist. |
+| BUG-17 | High | P1 | OPEN | Upsert overwrites `upload_id` on conflict, breaking delete isolation. Deleting an import that overlaps with a previous import will remove rows from the earlier import. |
+| BUG-18 | High | P1 | OPEN | AlertDialogAction auto-closes dialog before async handleDelete completes. "Deleting..." state is dead code that never renders. |
+| BUG-19 | Medium | P2 | OPEN | No rate limiting on DELETE endpoint. |
+| BUG-20 | Medium | P2 | OPEN | No authorization check -- any authenticated user can delete any import regardless of ownership or role. |
+| BUG-21 | Medium | P2 | OPEN | Non-atomic delete -- data rows deleted without error checking, then history record deleted separately. Partial failure leaves inconsistent state. |
+| BUG-22 | Medium | P2 | OPEN | No confirmed index on `upload_id` column. DELETE queries will do full table scans as data grows. |
+| BUG-23 | Low | P3 | OPEN | Confirmation dialog shows CSV row_count instead of actually persisted rows_inserted for error-status imports. |
+| BUG-24 | Low | P3 | OPEN | Upload history record created with status "success" before any data is written. |
+
+---
+
+### Overall QA Verdict (Round 5): NOT READY FOR PRODUCTION
+
+**Inferred Acceptance Criteria:** 15/15 PASS
+**New Bugs Found:** 9 total (1 Critical, 2 High, 4 Medium, 2 Low)
+**Blocking Issues:**
+1. BUG-16 (Critical, P0) -- Missing migration file for `upload_id` column. Must verify column exists in production database and create migration for reproducibility.
+2. BUG-17 (High, P1) -- Delete isolation broken by upsert overwriting `upload_id`. Must decide on ownership model before this feature can be safely used.
+3. BUG-18 (High, P1) -- Dialog closes before delete completes. Loading state never visible. Must add `e.preventDefault()` to keep dialog open during async operation.
+
+**Required actions before production readiness:**
+1. Create migration file for `upload_id` column with index and FK constraint (BUG-16)
+2. Decide on delete scope when uploads overlap (BUG-17) and either fix or clearly document
+3. Fix AlertDialog to stay open during deletion (BUG-18)
+4. Add rate limiting on DELETE (BUG-19)
+5. Consider authorization check for delete (BUG-20)
+
+**Recommendation:** Fix BUG-16, BUG-17, and BUG-18 before deploying to production. Then run `/qa` again for verification.

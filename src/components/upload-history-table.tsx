@@ -31,7 +31,7 @@ interface UploadHistoryRow {
   filename: string;
   csv_type: "activity_metrics" | "conversation_data";
   row_count: number;
-  status: "success" | "error";
+  status: "processing" | "success" | "error";
   error_message: string | null;
   uploaded_at: string;
   profiles: { full_name: string | null } | null;
@@ -157,6 +157,13 @@ export function UploadHistoryTable({ rows }: UploadHistoryTableProps) {
                         >
                           Success
                         </Badge>
+                      ) : row.status === "processing" ? (
+                        <Badge
+                          variant="secondary"
+                          className="bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300"
+                        >
+                          Processing
+                        </Badge>
                       ) : (
                         <Badge
                           variant="destructive"
@@ -194,14 +201,17 @@ export function UploadHistoryTable({ rows }: UploadHistoryTableProps) {
             <AlertDialogTitle>Delete Import</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently delete <strong>{deleteTarget?.filename}</strong> and
-              remove all {deleteTarget?.row_count.toLocaleString()} associated data rows
-              from the database. This action cannot be undone.
+              remove its associated data rows from the database. Rows that were
+              updated by a later import will not be affected. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDelete}
+              onClick={(e) => {
+                e.preventDefault(); // Prevent auto-close so loading state is visible
+                handleDelete();
+              }}
               disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

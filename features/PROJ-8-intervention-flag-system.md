@@ -556,6 +556,149 @@ No new packages needed. All UI uses existing shadcn/ui components (Badge, Card, 
 - **Production Ready:** YES
 - **Recommendation:** All blocking bugs fixed. Remaining 4 low-severity issues can be addressed in a future sprint.
 
+### QA Pass 3 -- Targeted Audit of Commit 413277d (hasData Fix)
+
+**Tested:** 2026-03-14
+**Commit Under Review:** `413277d fix(PROJ-8): Fix hasData check to query daily_metrics instead of flags table`
+**Tester:** QA Engineer (AI)
+**Scope:** Code review audit of 3 changed files (src/app/api/flags/route.ts, src/components/intervention-flags.tsx, src/lib/types/flags.ts)
+
+#### Build Verification
+- [x] `npm run build` passes with zero errors (Next.js 16.1.1, Turbopack)
+- [x] All PROJ-8 routes compiled: `/api/flags`, `/api/flags/count`, `/api/flags/evaluate`, `/api/flags/thresholds`, `/dashboard/interventions`, `/dashboard/interventions/settings`
+
+#### Test Cases for the hasData Fix
+
+**TC-1: hasData correctly queries daily_metrics instead of flags table -- PASS**
+- The old code derived `hasData` from `workspaces.length > 0`, where `workspaces` came from `flags` table rows with non-resolved status. This was wrong because when no flags have been evaluated yet (first visit to interventions page before first evaluation runs), `workspaces` would be empty even if daily_metrics had data.
+- The new code adds a direct query: `supabase.from("daily_metrics").select("id", { count: "exact", head: true }).limit(1)` which correctly checks whether any metric data exists regardless of flag state.
+- Verdict: Fix is logically correct.
+
+**TC-2: hasData query uses correct Supabase client (user client, not admin) -- PASS**
+- The query uses the `supabase` client (line 104), which is the user-authenticated client created via `createClient()`.
+- The `daily_metrics` table has an RLS policy "Authenticated users can view daily metrics" with `using (true)`, so any authenticated user can read.
+- This means the SELECT query will succeed for any authenticated user.
+
+**TC-3: hasData is included in the API response -- PASS**
+- `hasData` is returned in the response JSON at line 122 of `route.ts`.
+- The `FlagsResponse` TypeScript interface in `types/flags.ts` includes `hasData: boolean` (line 64).
+- Type safety is maintained end-to-end.
+
+**TC-4: Client-side correctly consumes hasData from API response -- PASS**
+- `intervention-flags.tsx` line 128 reads: `const hasData = activeData?.hasData ?? historyData?.hasData ?? false;`
+- Falls back to `historyData` if `activeData` is not yet loaded, then defaults to `false`.
+- Passed to `FlagEmptyState` at line 180: `<FlagEmptyState hasData={hasData} allDisabled={allFlagsDisabled} />`
+
+**TC-5: FlagEmptyState priority logic remains correct -- PASS**
+- `allDisabled` check comes first (line 23-49 of flag-empty-state.tsx) -- correct, this should take priority
+- `!hasData` check comes second (line 52-79) -- shows "No Data Uploaded Yet" with import link
+- Default is "All Clear!" (line 82-100) -- shown when hasData=true and no active flags
+- Priority order: allDisabled > !hasData > allClear. This is correct.
+
+**TC-6: hasData returns consistent results for both active and history tabs -- PASS**
+- The `/api/flags` GET endpoint runs the `daily_metrics` count query on every call regardless of the `status` filter parameter.
+- Whether the client requests `?status=resolved` (history tab) or the default active/acknowledged view, `hasData` is always computed and returned.
+- The client fallback `activeData?.hasData ?? historyData?.hasData ?? false` ensures it works even if one tab hasn't loaded yet.
+
+**TC-7: Edge case -- daily_metrics table is empty -- PASS**
+- When `daily_metrics` has zero rows, `metricsCount` will be 0.
+- `(metricsCount ?? 0) > 0` evaluates to `false`.
+- `hasData` = `false`, which correctly triggers the "No Data Uploaded Yet" empty state.
+
+**TC-8: Edge case -- daily_metrics has data but flags table is empty (first time before evaluation) -- PASS**
+- This was the exact bug being fixed. With the new code, `hasData` comes from `daily_metrics` (which has data = true), not from the flags table.
+- The empty state will show "All Clear!" instead of the incorrect "No Data Uploaded Yet".
+- This is the correct behavior.
+
+**TC-9: Edge case -- Supabase count query returns null -- PASS**
+- Line 109: `(metricsCount ?? 0) > 0` handles the case where `count` is `null` by defaulting to 0.
+- This would result in `hasData = false`, which is a safe conservative default.
+
+#### Performance Analysis
+
+**TC-10: Additional query adds minimal overhead -- PASS (with note)**
+- The new query uses `{ count: "exact", head: true }` with `.limit(1)`, which performs a COUNT query without returning row data.
+- However, `head: true` already prevents returning rows, so `.limit(1)` is redundant (harmless but unnecessary).
+- The COUNT query scans the `daily_metrics` table. For a 3-person team with limited data, this is fast.
+- The `/api/flags` GET handler now makes 6 queries total: main flags query, 3 summary counts, workspace distinct query, and the new daily_metrics count. All use `head: true` or are lightweight. Acceptable for the scale of this application.
+
+#### Security Audit of the Change
+
+**SEC-1: No SQL injection risk -- PASS**
+- The new query uses Supabase parameterized query builder. No user input is interpolated.
+
+**SEC-2: No auth bypass -- PASS**
+- The `hasData` query runs after the auth check at line 17 (`if (!user)` returns 401).
+- Uses the user-scoped Supabase client, which enforces RLS.
+
+**SEC-3: No data leakage -- PASS**
+- The `hasData` boolean only reveals whether ANY data exists in `daily_metrics`, not the data itself.
+- For an internal 3-person team dashboard, this is not sensitive information.
+- RLS on `daily_metrics` allows all authenticated users to read, which is the intended design.
+
+**SEC-4: No denial-of-service amplification -- PASS**
+- The COUNT query is lightweight. No user-controlled parameters affect its execution path.
+
+#### Regression Analysis
+
+**REG-1: PROJ-1 (Authentication) -- NO REGRESSION**
+- No changes to auth flow, middleware, or session handling.
+
+**REG-2: PROJ-2 (CSV Data Import) -- NO REGRESSION**
+- No changes to the import route. The `daily_metrics` table schema is unchanged.
+- The import route was not modified in this commit.
+
+**REG-3: PROJ-3 (Campaign Intelligence Snapshot) -- NO REGRESSION**
+- No PROJ-3 files were modified.
+
+**REG-4: PROJ-8 internal regression -- NO REGRESSION**
+- The flags GET API response now includes an additional field `hasData`. This is additive and non-breaking.
+- The TypeScript interface `FlagsResponse` was updated to include `hasData: boolean`, ensuring type safety.
+- The old `workspaces.length > 0` check in `intervention-flags.tsx` is replaced with `hasData` from the API. The `workspaces` variable is still computed and used for the filter dropdown -- it was not removed.
+
+#### Bugs Found in This Audit
+
+**BUG-8: Redundant `.limit(1)` on `head: true` count query**
+- **Severity:** Informational (no functional impact)
+- **Location:** `src/app/api/flags/route.ts` line 107
+- **Details:** The query uses `{ count: "exact", head: true }` which already returns only the count without row data. Adding `.limit(1)` is redundant since `head: true` skips row fetching entirely. Not harmful, but unnecessary.
+- **Priority:** None (cosmetic)
+
+**BUG-9: Six sequential database queries in GET /api/flags with no parallelization**
+- **Severity:** Low
+- **Location:** `src/app/api/flags/route.ts` lines 32-109
+- **Steps to Reproduce:**
+  1. Navigate to `/dashboard/interventions`
+  2. The GET `/api/flags` handler runs 6 queries sequentially: main flags query, 3 summary counts, workspace distinct query, and daily_metrics count
+- **Expected:** Independent queries (summary counts, workspace list, hasData check) could run in parallel using `Promise.all()` to reduce total response latency
+- **Actual:** All 6 queries run sequentially, adding up their individual latencies
+- **Impact:** For a 3-person team with small data volume, this is unlikely to cause noticeable latency. However, as data grows, the accumulated query time could become visible.
+- **Priority:** Nice to have (performance optimization for future)
+
+**BUG-10: hasData fallback logic could show stale state during tab transitions**
+- **Severity:** Low
+- **Location:** `src/components/intervention-flags.tsx` line 128
+- **Steps to Reproduce:**
+  1. Navigate to `/dashboard/interventions` when `daily_metrics` is empty (hasData=false)
+  2. Upload CSV data in another tab
+  3. Switch to the history tab in interventions page
+  4. The history tab loads its own data from `/api/flags?status=resolved` which also returns `hasData: true`
+  5. Switch back to the active tab -- `activeData` is stale (still has `hasData: false` from the old fetch)
+  6. Since `activeData?.hasData` is checked first, the stale `false` value takes precedence over the newer `true` from `historyData`
+- **Expected:** The most recently fetched `hasData` value should be used
+- **Actual:** `activeData?.hasData` is prioritized even if it is stale, because the fallback chain checks `activeData` first
+- **Impact:** Very unlikely in practice for a 3-person team who would typically reload the page after importing data. The active tab would also refetch when filters change or on next navigation.
+- **Priority:** Nice to have
+
+#### Summary (QA Pass 3 -- 2026-03-14)
+- **Fix Correctness:** The hasData fix is logically correct and addresses the root cause
+- **Test Cases:** 10/10 passed
+- **Security:** No vulnerabilities introduced by this change
+- **Regression:** No regressions in PROJ-1, PROJ-2, PROJ-3, or other PROJ-8 functionality
+- **New Bugs Found:** 3 total -- BUG-8 (informational), BUG-9 (low, performance), BUG-10 (low, stale state)
+- **Verdict:** PASS -- The fix is correct, safe to deploy, and introduces no blocking issues
+- **Cumulative Bug Count:** 10 total across all QA passes -- 3 fixed (BUG-1, BUG-4, BUG-5), 7 remaining low/informational severity
+
 ## Deployment
 - **Deployed:** 2026-03-14
 - **Commit:** deploy(PROJ-8)
