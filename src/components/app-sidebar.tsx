@@ -10,6 +10,7 @@ import {
   Gauge,
   AlertTriangle,
   MessageSquare,
+  ArrowLeftRight,
 } from "lucide-react";
 import {
   Sidebar,
@@ -62,6 +63,12 @@ const navItems = [
     title: "Messaging Insights",
     href: "/dashboard/messaging",
     icon: MessageSquare,
+    exact: true,
+  },
+  {
+    title: "Segmente",
+    href: "/dashboard/segments",
+    icon: ArrowLeftRight,
     exact: true,
   },
   {

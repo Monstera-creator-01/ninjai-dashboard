@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import { useMessagingInsights } from "@/hooks/use-messaging-insights";
 import { MessagingWeeklyCard } from "@/components/messaging-weekly-card";
 import { ReplyAnalysisOverview } from "@/components/reply-analysis-overview";
@@ -14,6 +16,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, AlertTriangle } from "lucide-react";
+import type { ConversationFilters } from "@/lib/types/messaging";
 
 function MessagingLoadingSkeleton() {
   return (
@@ -101,6 +104,22 @@ function MessagingErrorState({
 }
 
 export function MessagingInsight() {
+  const searchParams = useSearchParams();
+
+  // Build initial filter overrides from URL search params (e.g. from segment detail links)
+  const initialFilters = useMemo(() => {
+    const overrides: Partial<ConversationFilters> = {};
+    const workspace = searchParams.get("workspace");
+    if (workspace) overrides.workspace = workspace.split(",");
+    const sender = searchParams.get("sender");
+    if (sender) overrides.sender = sender;
+    const category = searchParams.get("category");
+    if (category) overrides.category = category;
+    const search = searchParams.get("search");
+    if (search) overrides.search = search;
+    return Object.keys(overrides).length > 0 ? overrides : undefined;
+  }, [searchParams]);
+
   const {
     conversations,
     conversationsLoading,
@@ -113,7 +132,7 @@ export function MessagingInsight() {
     resetFilters,
     updateTag,
     refetch,
-  } = useMessagingInsights();
+  } = useMessagingInsights(initialFilters);
 
   // Loading state (initial load)
   if (summaryLoading && !summary) {

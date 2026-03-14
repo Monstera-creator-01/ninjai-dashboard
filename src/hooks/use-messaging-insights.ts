@@ -65,7 +65,13 @@ interface UseMessagingInsightsReturn {
   refetch: () => void;
 }
 
-export function useMessagingInsights(): UseMessagingInsightsReturn {
+export function useMessagingInsights(
+  initialOverrides?: Partial<ConversationFilters>
+): UseMessagingInsightsReturn {
+  const initialFilters = initialOverrides
+    ? { ...DEFAULT_FILTERS, ...initialOverrides }
+    : DEFAULT_FILTERS;
+
   const [conversations, setConversations] = useState<ConversationsResponse | null>(null);
   const [conversationsLoading, setConversationsLoading] = useState(true);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
@@ -74,7 +80,7 @@ export function useMessagingInsights(): UseMessagingInsightsReturn {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
-  const [filters, setFiltersState] = useState<ConversationFilters>(DEFAULT_FILTERS);
+  const [filters, setFiltersState] = useState<ConversationFilters>(initialFilters);
 
   const fetchConversations = useCallback(async (f: ConversationFilters) => {
     setConversationsLoading(true);
@@ -126,10 +132,10 @@ export function useMessagingInsights(): UseMessagingInsightsReturn {
     }
   }, []);
 
-  // Initial fetch
+  // Initial fetch (uses initialFilters from useState, captured once)
   useEffect(() => {
-    fetchConversations(DEFAULT_FILTERS);
-    fetchSummary(DEFAULT_FILTERS);
+    fetchConversations(initialFilters);
+    fetchSummary(initialFilters);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
