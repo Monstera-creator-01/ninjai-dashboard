@@ -1,6 +1,6 @@
 # PROJ-4: Weekly Campaign Health Review (Layer 2)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -233,4 +233,8 @@ All 7 new components from the tech design plus 3 state components:
 **PASS** — All acceptance criteria met (with 2 documented deviations). 4 bugs found and fixed. Security posture is appropriate for an internal team tool. Ready for deployment.
 
 ## Deployment
-_To be added by /deploy_
+
+- **Production URL:** https://ninjai-dashboard-office-monstera-sols-projects.vercel.app/dashboard/health
+- **Deployed:** 2026-03-14
+- **Vercel Build:** PASS (1m build time)
+- **Git Tag:** v1.4.0-PROJ-4
