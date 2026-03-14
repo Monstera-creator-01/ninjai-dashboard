@@ -4,7 +4,6 @@ description: Context-aware guide that tells you where you are in the workflow an
 argument-hint: [optional question]
 user-invocable: true
 allowed-tools: Read, Glob, Grep, Bash
-model: opus
 ---
 
 # Project Help Guide

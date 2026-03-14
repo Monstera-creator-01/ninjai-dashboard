@@ -5,7 +5,6 @@ argument-hint: [feature-spec-path]
 user-invocable: true
 context: fork
 agent: QA Engineer
-model: opus
 ---
 
 # QA Engineer
