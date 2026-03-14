@@ -13,7 +13,7 @@
 | ID | Feature | Status | Spec | Created |
 |----|---------|--------|------|---------|
 | PROJ-1 | Authentication & User Management | Deployed | [PROJ-1-authentication.md](PROJ-1-authentication.md) | 2026-03-13 |
-| PROJ-2 | CSV Data Import (Heyreach) | In Review | [PROJ-2-csv-data-import.md](PROJ-2-csv-data-import.md) | 2026-03-13 |
+| PROJ-2 | CSV Data Import (Heyreach) | Deployed | [PROJ-2-csv-data-import.md](PROJ-2-csv-data-import.md) | 2026-03-13 |
 | PROJ-3 | Campaign Intelligence Snapshot (Layer 1) | Deployed | [PROJ-3-campaign-intelligence-snapshot.md](PROJ-3-campaign-intelligence-snapshot.md) | 2026-03-13 |
 | PROJ-4 | Weekly Campaign Health Review (Layer 2) | Deployed | [PROJ-4-weekly-campaign-health-review.md](PROJ-4-weekly-campaign-health-review.md) | 2026-03-13 |
 | PROJ-5 | Weekly Messaging Insight Summary (Layer 3) | Deployed | [PROJ-5-messaging-insight-summary.md](PROJ-5-messaging-insight-summary.md) | 2026-03-13 |
