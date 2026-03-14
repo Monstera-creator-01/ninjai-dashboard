@@ -367,7 +367,7 @@ export async function POST(request: NextRequest) {
         : batch.map((row) => buildConversationRow(row));
 
     const { error } = await adminClient.rpc(rpcName, {
-      p_rows: JSON.stringify(batchRows),
+      p_rows: batchRows,
       p_upload_id: uploadId,
     });
 
