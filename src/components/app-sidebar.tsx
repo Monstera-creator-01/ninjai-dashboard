@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   MessageSquare,
   ArrowLeftRight,
+  ClipboardList,
 } from "lucide-react";
 import {
   Sidebar,
@@ -70,6 +71,12 @@ const navItems = [
     href: "/dashboard/segments",
     icon: ArrowLeftRight,
     exact: true,
+  },
+  {
+    title: "AM Summary",
+    href: "/dashboard/am-summary",
+    icon: ClipboardList,
+    exact: false,
   },
   {
     title: "Operator",
