@@ -1,6 +1,6 @@
 # PROJ-7: Account Manager Campaign Summary (Layer 5)
 
-## Status: In Progress
+## Status: In Review
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -414,8 +414,127 @@ Neuer Eintrag in der Sidebar-Navigation:
 - SELECT: Alle authentifizierten User können alle Zuweisungen lesen
 - INSERT/UPDATE/DELETE: Nur Admins (profiles.role = 'admin')
 
+## Implementation Notes (Frontend)
+
+**Frontend completed on 2026-03-14.**
+
+### Files Created
+- **Types:** `src/lib/types/am-summary.ts` -- All TypeScript interfaces for AM Summary (AMWorkspaceCardData, AMWorkspaceDetailResponse, EmergingRisk, TalkingPointsData, WeekArchiveEntry, etc.)
+- **Hooks:** `src/hooks/use-am-summary.ts` -- Fetches overview data from /api/am-summary
+- **Hooks:** `src/hooks/use-am-workspace-detail.ts` -- Fetches detail data, manages talking points auto-save with 3s debounce, week archive navigation
+- **Components:**
+  - `src/components/am-workspace-card.tsx` -- Compact workspace card for overview (health badge, activity, KPIs, notable count, risk count)
+  - `src/components/am-kpi-section.tsx` -- KPI grid with current/previous/trend and week assessment badge (Improved/Stable/Declining)
+  - `src/components/am-notable-conversations.tsx` -- Notable conversations list with expand/collapse using ConversationDetailRow
+  - `src/components/am-emerging-risks.tsx` -- Risk cards with severity badges and recommended actions
+  - `src/components/am-talking-points.tsx` -- Editable textarea with auto-save, week archive dropdown, read-only for past weeks
+  - `src/components/am-copy-button.tsx` -- Copy-to-clipboard as formatted Markdown with toast feedback
+  - `src/components/am-summary.tsx` -- Main overview component with workspace filter and assignment info banner
+  - `src/components/am-workspace-detail.tsx` -- Full detail page with breadcrumb, KPIs, conversations, risks, talking points
+  - `src/components/am-settings.tsx` -- Admin settings for workspace assignments with checkbox grid per user
+  - `src/components/am-summary-loading.tsx` -- Loading skeletons for both overview and detail pages
+  - `src/components/am-summary-error.tsx` -- Error state with retry button
+  - `src/components/am-summary-empty.tsx` -- Empty state with link to CSV import
+- **Pages:**
+  - `src/app/dashboard/am-summary/page.tsx` -- Overview route
+  - `src/app/dashboard/am-summary/[workspace]/page.tsx` -- Detail route
+  - `src/app/dashboard/am-summary/settings/page.tsx` -- Settings route
+- **Sidebar:** Added "AM Summary" nav item with ClipboardList icon, prefix-match, after Segmente
+
+### Reused Components
+- HealthBadge (PROJ-3)
+- TrendArrow (PROJ-3)
+- ActivityIndicator (PROJ-9)
+- ConversationDetailRow (PROJ-5)
+- WorkspaceFilter (PROJ-3)
+
+## Implementation Notes (Backend)
+
+**Backend completed on 2026-03-14.**
+
+### Database Migration
+- `supabase/migrations/20260314_proj7_am_summary_tables.sql` -- Migration SQL for both tables
+  - `am_talking_points` table with RLS (users read/write own, team_leads read all)
+  - `workspace_assignments` table with RLS (all read, team_leads write)
+  - Auto-update trigger for `updated_at` on am_talking_points
+  - Indexes on user_id + workspace for fast lookups
+
+### API Routes Created
+- `src/app/api/am-summary/route.ts` -- GET overview: aggregates snapshot data, workspace assignments, notable conversation counts, risk counts per workspace. Parallel queries for performance.
+- `src/app/api/am-summary/[workspace]/route.ts` -- GET detail: KPIs with trend, notable conversations (max 10), emerging risk detection (multi-week trend analysis), auto-generated talking points, week archive. Server-side risk calculation with 4-week lookback.
+- `src/app/api/am-summary/talking-points/route.ts` -- GET/PUT: CRUD for talking points with rate limiting (30 req/min) and upsert on unique constraint.
+- `src/app/api/am-summary/assignments/route.ts` -- GET/PUT: CRUD for workspace assignments. PUT restricted to team_lead role (403 for others). Delete-and-reinsert pattern for clean assignment updates.
+
+### Key Technical Decisions
+- **Rate limiting** on talking points PUT (30/min) to protect against auto-save spam
+- **"Last write wins"** for assignments — sufficient for 3-person team
+- **team_lead** role required for assignment management (403 Forbidden for others)
+- **Auto-generated talking points** created on first load of new week, saved to DB
+- **Risk detection** uses 4-week rolling window with week-over-week comparison
+- **Parallel Supabase queries** via Promise.all for performance (< 3s target)
+
+### Pending: Database Migration
+Run `supabase/migrations/20260314_proj7_am_summary_tables.sql` in the Supabase SQL Editor to create the tables.
+
 ## QA Test Results
-_To be added by /qa_
+
+**QA completed on 2026-03-14.**
+
+### Build & Lint
+- Build: PASS (compiled successfully, all routes generated)
+- Lint: PASS (no errors or warnings)
+
+### File Completeness
+All 25+ files specified in the implementation notes exist and are correctly wired:
+- Types (1), Hooks (2), Components (12), Pages (3), API Routes (4), Migration (1), Sidebar update (1)
+- All reused components verified: HealthBadge, TrendArrow, ActivityIndicator, ConversationDetailRow, WorkspaceFilter
+
+### Acceptance Criteria
+
+| AC | Description | Status |
+|----|-------------|--------|
+| AC-1 | Übersichtsseite mit Workspace-Karten | PASS |
+| AC-2 | Detailseite pro Workspace | PASS |
+| AC-3 | KPIs & Trends Sektion | PASS |
+| AC-4 | Notable Conversations Sektion | PASS |
+| AC-5 | Emerging Risks Sektion | PASS (bug fixed, see below) |
+| AC-6 | Talking Points Sektion | PASS |
+| AC-7 | Copy-to-Clipboard | PASS |
+| AC-8 | Workspace-Zuweisung (Admin-Settings) | PASS |
+
+### Bugs Found & Fixed
+
+**BUG-1: Declining rate values duplicated in risk description (FIXED)**
+- **Location:** `src/app/api/am-summary/[workspace]/route.ts` — `detectRisks()` function, lines 126-179
+- **Problem:** When Reply Rate or Acceptance Rate declined for 3+ consecutive weeks, the risk description showed duplicate values (e.g. "8% → 5% → 8%") instead of the correct chain (e.g. "12% → 8% → 5%"). Root cause: in the loop collecting rate values, subsequent iterations pushed `sorted[i]` (already collected) instead of `sorted[i+1]` (the next older value). Also `rateValues.reverse()` mutated the array in-place, corrupting the `values` property.
+- **Fix:** Changed collection order to newest-first (`sorted[i]` first, then `sorted[i+1]`), and used spread copy `[...rateValues].reverse()` for display to avoid in-place mutation. Affects both reply rate and acceptance rate declining risk detection.
+
+### Edge Cases Verified
+- No workspace assignments → info banner shown + all workspaces visible
+- No notable conversations → empty state with link to Messaging Insights
+- No risks → "Keine aktuellen Risiken" with checkmark icon
+- Past weeks → read-only textarea, hint text shown
+- First week with no archive → "Noch kein Archiv vorhanden"
+- Copy failure → error toast "Kopieren fehlgeschlagen"
+- Workspace filter → correctly filters cards, empty filter state shown
+- Auto-save debounce (3s) → local state updates immediately, save fires after delay
+
+### Security Review
+- Auth: All 4 API routes check `auth.getUser()` and return 401 if unauthorized
+- RLS: Both tables have RLS enabled with correct policies (users own data, team_leads elevated access)
+- Authorization: Assignments PUT restricted to `team_lead` role (403 Forbidden for others)
+- Rate limiting: Talking points PUT limited to 30 req/min per user (in-memory, sufficient for 3-person team)
+- Input validation: Required params checked, type validation on `userNotes` (string) and `workspaces` (string[])
+- No SQL injection risk (Supabase query builder used throughout)
+- No XSS risk (React escapes output by default, no `dangerouslySetInnerHTML`)
+
+### Minor Notes (Non-blocking)
+- Rate limiter uses in-memory `Map` — resets between serverless cold starts. Acceptable for 3-person team with 3s frontend debounce.
+- Hardcoded color classes (e.g. `bg-blue-50`, `bg-red-50`) won't adapt to dark mode. Consistent with other features in the project.
+- `get_latest_dates_by_workspace` RPC must exist in the database (used by deployed PROJ-3 snapshot).
+
+### Pending
+- Database migration `supabase/migrations/20260314_proj7_am_summary_tables.sql` must be run in Supabase SQL Editor before the feature works in production.
 
 ## Deployment
 _To be added by /deploy_
