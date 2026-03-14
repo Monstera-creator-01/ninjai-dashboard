@@ -1,6 +1,6 @@
 # PROJ-5: Weekly Messaging Insight Summary (Layer 3)
 
-## Status: Planned
+## Status: In Progress
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -109,7 +109,161 @@
 ---
 
 ## Tech Design (Solution Architect)
-_To be added by /architecture_
+
+### A) Seitenstruktur & Komponenten-Baum
+
+```
+/dashboard/messaging                          ← Neue Seite
+├── Weekly Insight Card (AC-5)                 ← Letzte 7 Tage Zusammenfassung
+│   ├── Neue Replies Zähler
+│   ├── Reply-Kategorie Verteilung (Chart)
+│   ├── Ungetaggte Conversations Hinweis
+│   └── Notable Conversations Liste
+│
+├── Reply Analysis Overview (AC-2)            ← Zusammenfassende Statistiken
+│   ├── Total Conversations
+│   ├── Mit/Ohne Replies (Zähler + Prozent)
+│   ├── Conversation Depth Verteilung (Balkendiagramm)
+│   └── Top 5 Sender nach Reply-Rate
+│
+├── Filter Bar (AC-1 + AC-6)                  ← Kombinierbare Filter
+│   ├── Suche (Texteingabe, min. 2 Zeichen)
+│   ├── Workspace Filter (Multi-Select)
+│   ├── Depth Filter (1-touch / 2-touch / 3+)
+│   ├── Datum Filter (Von–Bis)
+│   ├── Sender Filter (Dropdown)
+│   ├── Reply Status Filter (replied / not replied)
+│   ├── Kategorie Filter (Dropdown)
+│   └── Filter-Reset Button
+│
+├── Conversation Table (AC-1)                 ← Paginierte Liste (25/Seite)
+│   ├── Tabellenzeile pro Conversation
+│   │   ├── Lead-Name + Firma
+│   │   ├── Workspace Badge
+│   │   ├── Depth Kategorie
+│   │   ├── Letztes Nachrichtendatum
+│   │   ├── Reply Status Indikator
+│   │   ├── Tag Dropdown (AC-4)              ← Inline-Kategorisierung
+│   │   ├── Notable Toggle (AC-5)            ← Stern/Flag Button
+│   │   └── Expand Button                    ← Öffnet Detail-Ansicht
+│   └── Pagination (Seitenzahlen)
+│
+└── Conversation Detail Panel (AC-3)          ← Expandierbare Zeile
+    ├── Lead Info (Name, Position, Firma, Ort, LinkedIn-Link)
+    ├── Message Preview
+    │   ├── Erste ausgehende Nachricht
+    │   ├── Erste eingehende Antwort (oder "Keine Antwort")
+    │   └── Letzte Nachricht (falls anders)
+    ├── Metadata (Depth, Sender, Sender-Email)
+    └── Custom Fields (Key-Value Paare aus JSONB)
+```
+
+### B) Datenmodell
+
+**Bestehende Tabelle: `conversations`**
+- Alle nötigen Felder bereits vorhanden (Lead-Daten, Nachrichten, Depth, etc.)
+- Keine Änderungen nötig
+
+**Neue Tabelle: `conversation_tags`**
+- Jeder Eintrag gehört zu genau einer Conversation
+- Speichert:
+  - Welche Kategorie zugewiesen wurde (eine aus 6 Optionen: Interested, Objection, Not now, Wrong person, Not interested, Referral)
+  - Ob die Conversation als "Notable" markiert ist (ja/nein)
+  - Wer das Tag gesetzt hat und wann
+- Verknüpfung über `conversation_id` (eindeutig — max. 1 Tag pro Conversation)
+- Tags bleiben bei CSV-Re-Import erhalten (Upsert auf conversations löscht keine Tags)
+- Zugriff: Alle authentifizierten Teammitglieder können Tags lesen, setzen und ändern
+
+### C) API-Routen (3 neue Endpunkte)
+
+| Route | Methode | Zweck |
+|-------|---------|-------|
+| `/api/conversations` | GET | Conversations mit Filtern, Suche, Pagination abrufen |
+| `/api/conversations/summary` | GET | Statistiken (Reply-Analyse + Weekly Summary) |
+| `/api/conversations/tags` | PATCH | Tag setzen, ändern oder entfernen |
+
+**Route 1: `GET /api/conversations`**
+- Query-Parameter: `workspace`, `depth`, `dateFrom`, `dateTo`, `sender`, `replied`, `category`, `search`, `sort`, `page`
+- Filter werden serverseitig kombiniert (AND-Logik)
+- Suche: ILIKE über Nachrichtenfelder und Lead-Name/Firma
+- Pagination: 25 pro Seite, mit Gesamtanzahl
+- Gibt Conversations inkl. zugehörigem Tag zurück (LEFT JOIN auf `conversation_tags`)
+
+**Route 2: `GET /api/conversations/summary`**
+- Gleiche Filter-Parameter wie Route 1 (Stats reagieren auf Filter)
+- Berechnet: Gesamtzahl, Reply-Quote, Depth-Verteilung, Top Sender
+- Separat: Weekly Card Daten (letzte 7 Tage, Kategorie-Breakdown, Ungetaggte)
+
+**Route 3: `PATCH /api/conversations/tags`**
+- Body: `{ conversationId, category?, isNotable? }`
+- Upsert: Erstellt oder aktualisiert Tag
+- Wenn category `null` und isNotable `false` → Tag wird gelöscht
+- Antwort: Aktualisiertes Tag-Objekt
+
+### D) Tech-Entscheidungen
+
+| Entscheidung | Begründung |
+|--------------|------------|
+| Serverseitige Filter & Pagination | Bei 1000+ Conversations wäre clientseitig zu langsam. Supabase-Queries filtern direkt in der Datenbank |
+| ILIKE für Suche | Einfach, ausreichend performant bei < 10k Conversations. Kein Volltextindex nötig |
+| LEFT JOIN statt separater Abfrage | Tags und Conversations zusammen laden vermeidet N+1 Problem und hält die API einfach |
+| Expandierbare Zeile statt Side Panel | Konsistenter mit dem bestehenden Table-Pattern im Projekt. Weniger Layout-Komplexität |
+| Inline Tag-Dropdown | Schnelles Tagging direkt in der Tabelle statt Extra-Dialog. Reduziert Klicks für den Operator |
+| Recharts für Charts | Bereits im Projekt installiert (wird in PROJ-3 und PROJ-4 verwendet). Kein neues Package nötig |
+| useEffect + useState Pattern | Bestehende Features nutzen dieses Pattern für Datenabruf. Konsistenz beibehalten |
+
+### E) Wiederverwendete Komponenten
+
+| Komponente | Verwendung |
+|------------|------------|
+| `ui/table` | Conversation-Tabelle |
+| `ui/select` | Filter-Dropdowns, Tag-Dropdown |
+| `ui/badge` | Workspace-Badges, Depth-Badges |
+| `ui/card` | Weekly Insight Card, Reply Analysis |
+| `ui/input` | Suchfeld |
+| `ui/button` | Filter-Reset, Notable Toggle |
+| `ui/pagination` | Seitennavigation |
+| `ui/popover` + `ui/calendar` | Datumsbereich-Filter |
+| `ui/skeleton` | Ladezustand |
+| `workspace-filter` | Workspace Multi-Select |
+
+### F) Neue Komponenten (8 Stück)
+
+| Komponente | Verantwortung |
+|------------|---------------|
+| `messaging-insight.tsx` | Haupt-Container, koordiniert State und Datenabruf |
+| `messaging-weekly-card.tsx` | Weekly Summary Card (AC-5) |
+| `reply-analysis-overview.tsx` | Statistik-Zusammenfassung (AC-2) |
+| `conversation-filter-bar.tsx` | Alle Filter + Suche (AC-1, AC-6) |
+| `conversation-table.tsx` | Paginierte Tabellenliste (AC-1) |
+| `conversation-detail-row.tsx` | Expandierbare Detail-Ansicht (AC-3) |
+| `conversation-tag-select.tsx` | Inline Tag-Dropdown (AC-4) |
+| `messaging-empty-state.tsx` | Leerzustand wenn keine Conversations |
+
+### G) Datenbank-Migration
+
+Eine neue Migration wird benötigt:
+- Erstellt `conversation_tags` Tabelle
+- Setzt Foreign Key auf `conversations.conversation_id`
+- Unique Constraint auf `conversation_id` (max. 1 Tag pro Conversation)
+- RLS Policy: Authentifizierte User können lesen und schreiben
+- Index auf `category` für schnelle Filterung
+
+### H) Dependencies
+
+Keine neuen Packages nötig. Alles mit bereits installierten Tools:
+- **Recharts** — Charts (bereits installiert)
+- **shadcn/ui** — UI-Komponenten (bereits installiert)
+- **date-fns** — Datumsberechnung (bereits installiert)
+- **Supabase Client** — Datenbankzugriff (bereits installiert)
+
+### I) Sidebar-Navigation
+
+Neuer Eintrag in `app-sidebar.tsx`:
+- Label: "Messaging Insights"
+- Route: `/dashboard/messaging`
+- Icon: `MessageSquare` (aus lucide-react, bereits im Projekt)
+- Position: Nach "Weekly Health" im Menü
 
 ## QA Test Results
 _To be added by /qa_
