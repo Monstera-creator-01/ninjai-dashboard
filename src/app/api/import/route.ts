@@ -210,17 +210,6 @@ function buildConversationRow(row: Record<string, any>) {
   };
 }
 
-async function logUploadHistory(
-  client: ReturnType<typeof createAdminClient>,
-  data: Record<string, unknown>
-) {
-  try {
-    await client.from("upload_history").insert(data);
-  } catch {
-    // Swallow history logging errors to avoid masking the original result
-  }
-}
-
 export async function POST(request: NextRequest) {
   // 1. Auth check
   const supabase = await createClient();
@@ -332,9 +321,33 @@ export async function POST(request: NextRequest) {
   }
 
   const adminClient = createAdminClient();
+
+  // 7. Create upload_history record FIRST to get the ID for tracking
+  const { data: historyRecord, error: historyError } = await adminClient
+    .from("upload_history")
+    .insert({
+      filename: file.name,
+      csv_type: csvType,
+      row_count: rows.length,
+      rows_inserted: 0,
+      rows_updated: 0,
+      status: "success",
+      uploaded_by: user.id,
+    })
+    .select("id")
+    .single();
+
+  if (historyError || !historyRecord) {
+    return NextResponse.json(
+      { error: "Failed to create upload record" },
+      { status: 500 }
+    );
+  }
+
+  const uploadId = historyRecord.id;
   let totalProcessed = 0;
 
-  // 7. Upsert in batches
+  // 8. Upsert in batches — stamp each row with upload_id
   const table =
     csvType === "activity_metrics" ? "daily_metrics" : "conversations";
   const onConflict =
@@ -344,8 +357,8 @@ export async function POST(request: NextRequest) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     const batchRows =
       csvType === "activity_metrics"
-        ? batch.map(buildActivityRow)
-        : batch.map(buildConversationRow);
+        ? batch.map((row) => ({ ...buildActivityRow(row), upload_id: uploadId }))
+        : batch.map((row) => ({ ...buildConversationRow(row), upload_id: uploadId }));
 
     const { error } = await adminClient
       .from(table)
@@ -357,42 +370,33 @@ export async function POST(request: NextRequest) {
           ? `Database error: ${error.message}. ${totalProcessed} of ${rows.length} rows were committed before the error.`
           : `Database error: ${error.message}`;
 
-      await logUploadHistory(adminClient, {
-        filename: file.name,
-        csv_type: csvType,
-        row_count: rows.length,
-        rows_inserted: totalProcessed,
-        rows_updated: 0,
-        status: "error",
-        error_message: errorDetail,
-        uploaded_by: user.id,
-      });
+      // Update history record with error status
+      await adminClient
+        .from("upload_history")
+        .update({
+          rows_inserted: totalProcessed,
+          status: "error",
+          error_message: errorDetail,
+        })
+        .eq("id", uploadId);
 
       return NextResponse.json({ error: errorDetail }, { status: 500 });
     }
     totalProcessed += batch.length;
   }
 
-  // 8. Log successful upload
-  await logUploadHistory(adminClient, {
-    filename: file.name,
-    csv_type: csvType,
-    row_count: rows.length,
-    rows_inserted: totalProcessed,
-    rows_updated: 0,
-    status: "success",
-    uploaded_by: user.id,
-  });
+  // 9. Update history record with final count
+  await adminClient
+    .from("upload_history")
+    .update({ rows_inserted: totalProcessed })
+    .eq("id", uploadId);
 
-  // 9. Run flag evaluation after activity metrics import
-  // Flag evaluation only runs on activity_metrics uploads since flags are
-  // based on daily metrics data (acceptance rates, reply rates, activity levels).
+  // 10. Run flag evaluation after activity metrics import
   let flagResults = null;
   if (csvType === "activity_metrics") {
     try {
       flagResults = await evaluateFlags(adminClient);
     } catch {
-      // Flag evaluation errors should not fail the import
       flagResults = { error: "Flag evaluation encountered an error" };
     }
   }
@@ -403,5 +407,89 @@ export async function POST(request: NextRequest) {
     rowCount: rows.length,
     processed: totalProcessed,
     flagEvaluation: flagResults,
+  });
+}
+
+// =============================================================
+// DELETE /api/import — Delete an import and its associated data rows
+// =============================================================
+
+const deleteSchema = z.object({
+  id: z.number().int().positive("Invalid upload ID"),
+});
+
+export async function DELETE(request: NextRequest) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let rawBody: unknown;
+  try {
+    rawBody = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+
+  const parsed = deleteSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
+      { status: 400 }
+    );
+  }
+
+  const { id } = parsed.data;
+  const adminClient = createAdminClient();
+
+  // Look up the upload record
+  const { data: upload, error: fetchError } = await adminClient
+    .from("upload_history")
+    .select("id, csv_type, row_count")
+    .eq("id", id)
+    .single();
+
+  if (fetchError || !upload) {
+    return NextResponse.json({ error: "Upload not found" }, { status: 404 });
+  }
+
+  // Delete associated data rows
+  const table =
+    upload.csv_type === "activity_metrics" ? "daily_metrics" : "conversations";
+
+  const { count: deletedRows } = await adminClient
+    .from(table)
+    .delete({ count: "exact" })
+    .eq("upload_id", id);
+
+  // Delete the upload history record itself
+  const { error: deleteError } = await adminClient
+    .from("upload_history")
+    .delete()
+    .eq("id", id);
+
+  if (deleteError) {
+    return NextResponse.json(
+      { error: `Failed to delete upload record: ${deleteError.message}` },
+      { status: 500 }
+    );
+  }
+
+  // Re-evaluate flags after data deletion (metrics may have changed)
+  if (upload.csv_type === "activity_metrics") {
+    try {
+      await evaluateFlags(adminClient);
+    } catch {
+      // Non-critical
+    }
+  }
+
+  return NextResponse.json({
+    success: true,
+    deletedRows: deletedRows ?? 0,
   });
 }
