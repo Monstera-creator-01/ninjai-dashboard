@@ -1,6 +1,6 @@
 # PROJ-8: Campaign Intervention Flag System (Layer 6)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -557,4 +557,7 @@ No new packages needed. All UI uses existing shadcn/ui components (Badge, Card, 
 - **Recommendation:** All blocking bugs fixed. Remaining 4 low-severity issues can be addressed in a future sprint.
 
 ## Deployment
-_To be added by /deploy_
+- **Deployed:** 2026-03-14
+- **Commit:** deploy(PROJ-8)
+- **Database Migration:** `create_flags_tables` applied to production Supabase
+- **No new environment variables required**
