@@ -1,8 +1,17 @@
 # PROJ-5: Weekly Messaging Insight Summary (Layer 3)
 
-## Status: In Progress
+## Status: In Review
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
+
+### Frontend Implementation Notes
+- Built 8 components: `messaging-insight.tsx` (main container), `messaging-weekly-card.tsx` (AC-5), `reply-analysis-overview.tsx` (AC-2), `conversation-filter-bar.tsx` (AC-1/AC-6), `conversation-table.tsx` (AC-1), `conversation-detail-row.tsx` (AC-3), `conversation-tag-select.tsx` (AC-4), `messaging-empty-state.tsx`
+- Created 3 API routes: `GET /api/conversations`, `GET /api/conversations/summary`, `PATCH /api/conversations/tags`
+- Created `useMessagingInsights` hook for data fetching with filter state management
+- Created types in `src/lib/types/messaging.ts`
+- Page at `/dashboard/messaging`, sidebar entry "Messaging Insights" with MessageSquare icon
+- Pie chart for reply category breakdown (user choice), semantic colors for categories
+- **Pending for backend**: `conversation_tags` table migration + RLS policies needed before tagging works
 
 ## Dependencies
 - Requires: PROJ-1 (Authentication) — user must be logged in
@@ -266,7 +275,42 @@ Neuer Eintrag in `app-sidebar.tsx`:
 - Position: Nach "Weekly Health" im Menü
 
 ## QA Test Results
-_To be added by /qa_
+**QA Date:** 2026-03-14
+**Build:** Pass | **Lint:** Pass | **TypeScript:** Pass
+
+### Bugs Found & Fixed (7)
+
+| ID | Severity | Issue | Fix |
+|----|----------|-------|-----|
+| BUG-1 | Critical | Category filter was client-side, breaking pagination (showed max 25 filtered results regardless of total) | Moved to DB-level: `!inner` join for specific categories, pre-query exclusion for "untagged" |
+| BUG-2 | Critical | Un-toggling notable accidentally deleted entire tag row when no category was set | Tag PATCH now merges with existing tag values; only deletes when both category AND notable are cleared |
+| BUG-3 | High | React Fragment shorthand `<>` in `.map()` had no key, causing console warning | Replaced with `<Fragment key={...}>` |
+| BUG-4 | High | Notable conversations in weekly card pulled from ALL data, not 7-day window | Changed source from `conversations` to `weeklyConversations` |
+| BUG-5 | High | Workspace/depth filters were single-select; spec requires multi-select | Replaced `<Select>` with Popover + Checkbox pattern for both filters |
+| BUG-6 | Medium | ILIKE wildcards (`%`, `_`) in search input not escaped, causing unexpected results | Added escape for `%`, `_`, `\` before wrapping in ILIKE pattern |
+| BUG-7 | Medium | No dateFrom/dateTo validation — user could set dateFrom > dateTo | Calendar `disabled` prop constrains range; fallback auto-adjusts other date if conflict |
+
+### Security Assessment: PASS
+- Auth checks on all 3 API routes (401 for unauthenticated)
+- No SQL injection — Supabase query builder parameterizes all inputs
+- No XSS — React auto-escapes JSX text content
+- RLS policies match spec (all authenticated users can CRUD tags)
+
+### Spec Compliance (Post-Fix)
+
+| AC | Status | Notes |
+|----|--------|-------|
+| AC-1 | Pass | Multi-select workspace/depth, pagination correct with all filters |
+| AC-2 | Pass | Reply analysis overview fully implemented |
+| AC-3 | Pass | Expandable detail rows with all required fields |
+| AC-4 | Pass | Tag CRUD works correctly, preserves notable flag |
+| AC-5 | Pass | Weekly card scoped to 7-day window |
+| AC-6 | Pass | Search with 2-char minimum, ILIKE chars escaped |
+
+### Remaining Low-Priority Items (not blocking)
+- No loading indicator during tag updates (cosmetic)
+- Hard-coded 5000-row limit on summary endpoint (acceptable for < 10k scale)
+- Custom fields parsing assumes `.raw` property structure (has fallback)
 
 ## Deployment
 _To be added by /deploy_

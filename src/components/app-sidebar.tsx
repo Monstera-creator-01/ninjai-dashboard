@@ -9,6 +9,7 @@ import {
   Activity,
   Gauge,
   AlertTriangle,
+  MessageSquare,
 } from "lucide-react";
 import {
   Sidebar,
@@ -55,6 +56,12 @@ const navItems = [
     title: "Health Review",
     href: "/dashboard/health",
     icon: Activity,
+    exact: true,
+  },
+  {
+    title: "Messaging Insights",
+    href: "/dashboard/messaging",
+    icon: MessageSquare,
     exact: true,
   },
   {
