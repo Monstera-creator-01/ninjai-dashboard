@@ -1,6 +1,6 @@
 # PROJ-3: Campaign Intelligence Snapshot (Layer 1)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -291,4 +291,7 @@ None — all required packages already installed (lucide-react, shadcn/ui compon
 - **Recommendation:** Deploy. Fix the 3 medium-severity performance bugs (SQL aggregation) in next sprint before data volume grows.
 
 ## Deployment
-_To be added by /deploy_
+- **Deployed:** 2026-03-14
+- **Deployed by:** /deploy skill
+- **Commit:** d53dff9 feat(PROJ-3): Implement Campaign Intelligence Snapshot with QA fixes
+- **Notes:** No new environment variables required beyond PROJ-1/PROJ-2. Security headers already configured. 3 medium-severity SQL performance bugs deferred to next sprint (BUG-1, BUG-2, BUG-3).
