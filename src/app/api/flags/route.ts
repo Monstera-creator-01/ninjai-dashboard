@@ -90,7 +90,7 @@ export async function GET(request: NextRequest) {
       .select("id", { count: "exact", head: true })
       .eq("status", "acknowledged");
 
-    // Get distinct workspaces that have non-resolved flags
+    // Get distinct workspaces that have non-resolved flags (for filter dropdown)
     const { data: workspaceData } = await supabase
       .from("flags")
       .select("workspace")
@@ -99,6 +99,14 @@ export async function GET(request: NextRequest) {
     const workspaces = [
       ...new Set((workspaceData ?? []).map((w: { workspace: string }) => w.workspace)),
     ].sort();
+
+    // Check if any data has been uploaded (for empty state detection)
+    const { count: metricsCount } = await supabase
+      .from("daily_metrics")
+      .select("id", { count: "exact", head: true })
+      .limit(1);
+
+    const hasData = (metricsCount ?? 0) > 0;
 
     const summary = {
       activeHighCount: activeHighCount ?? 0,
@@ -111,6 +119,7 @@ export async function GET(request: NextRequest) {
       flags: flags ?? [],
       summary,
       workspaces,
+      hasData,
       totalCount: count ?? 0,
       page,
       pageSize,

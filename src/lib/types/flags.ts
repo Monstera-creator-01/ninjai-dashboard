@@ -61,6 +61,7 @@ export interface FlagsResponse {
   flags: Flag[];
   summary: FlagSummary;
   workspaces: string[];
+  hasData: boolean;
   totalCount: number;
   page: number;
   pageSize: number;

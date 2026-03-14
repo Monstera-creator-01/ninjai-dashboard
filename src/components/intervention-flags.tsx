@@ -125,6 +125,7 @@ export function InterventionFlags() {
   }
 
   const workspaces = activeData?.workspaces ?? historyData?.workspaces ?? [];
+  const hasData = activeData?.hasData ?? historyData?.hasData ?? false;
   const summary = activeData?.summary ?? {
     activeHighCount: 0,
     activeMediumCount: 0,
@@ -176,7 +177,7 @@ export function InterventionFlags() {
               isSubmitting={isSubmitting}
             />
           ) : (
-            <FlagEmptyState hasData={workspaces.length > 0} allDisabled={allFlagsDisabled} />
+            <FlagEmptyState hasData={hasData} allDisabled={allFlagsDisabled} />
           )}
         </TabsContent>
 
