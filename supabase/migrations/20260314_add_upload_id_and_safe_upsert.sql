@@ -1,9 +1,21 @@
--- PROJ-2: Safe upsert functions + processing status
--- Fixes: BUG-17 (upsert overwrites upload_id), BUG-24 (premature success status)
--- Note: upload_id columns and indexes were added in a prior manual migration
+-- PROJ-2: Safe upsert functions + processing status + upload_id columns
+-- Fixes: BUG-24 (premature success status), BUG-25 (missing upload_id migration)
+-- upload_id IS updated on conflict so the latest upload owns the row (enables correct delete)
 
 -- ============================================================
--- 1. Add 'processing' status to upload_history
+-- 1. Add upload_id columns and indexes to data tables
+-- ============================================================
+alter table public.daily_metrics
+  add column if not exists upload_id bigint references public.upload_history(id) on delete set null;
+
+alter table public.conversations
+  add column if not exists upload_id bigint references public.upload_history(id) on delete set null;
+
+create index if not exists idx_daily_metrics_upload_id on public.daily_metrics (upload_id);
+create index if not exists idx_conversations_upload_id on public.conversations (upload_id);
+
+-- ============================================================
+-- 2. Add 'processing' status to upload_history
 -- ============================================================
 alter table public.upload_history
   drop constraint upload_history_status_check;
@@ -13,7 +25,7 @@ alter table public.upload_history
     check (status in ('processing', 'success', 'error'));
 
 -- ============================================================
--- 3. Safe upsert for daily_metrics (preserves upload_id on conflict)
+-- 3. Safe upsert for daily_metrics (updates upload_id on conflict)
 -- ============================================================
 create or replace function safe_upsert_daily_metrics(p_rows jsonb, p_upload_id bigint)
 returns void language sql as $$
@@ -60,12 +72,12 @@ returns void language sql as $$
     message_reply_rate = excluded.message_reply_rate,
     inmail_reply_rate = excluded.inmail_reply_rate,
     connection_acceptance_rate = excluded.connection_acceptance_rate,
+    upload_id = excluded.upload_id,
     updated_at = excluded.updated_at;
-    -- upload_id intentionally NOT updated — preserves original import ownership
 $$;
 
 -- ============================================================
--- 4. Safe upsert for conversations (preserves upload_id on conflict)
+-- 4. Safe upsert for conversations (updates upload_id on conflict)
 -- ============================================================
 create or replace function safe_upsert_conversations(p_rows jsonb, p_upload_id bigint)
 returns void language sql as $$
@@ -136,6 +148,6 @@ returns void language sql as $$
     first_outbound_message = excluded.first_outbound_message,
     first_inbound_reply = excluded.first_inbound_reply,
     custom_fields = excluded.custom_fields,
+    upload_id = excluded.upload_id,
     updated_at = excluded.updated_at;
-    -- upload_id intentionally NOT updated — preserves original import ownership
 $$;

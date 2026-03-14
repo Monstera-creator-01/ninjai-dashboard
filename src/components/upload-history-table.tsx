@@ -179,6 +179,7 @@ export function UploadHistoryTable({ rows }: UploadHistoryTableProps) {
                         size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-destructive"
                         onClick={() => setDeleteTarget(row)}
+                        disabled={isDeleting}
                         aria-label={`Delete import ${row.filename}`}
                       >
                         <Trash2 className="h-4 w-4" aria-hidden="true" />

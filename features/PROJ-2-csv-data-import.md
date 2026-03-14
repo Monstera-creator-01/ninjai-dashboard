@@ -931,3 +931,293 @@ No formal acceptance criteria were defined in the feature spec for the delete ca
 5. Consider authorization check for delete (BUG-20)
 
 **Recommendation:** Fix BUG-16, BUG-17, and BUG-18 before deploying to production. Then run `/qa` again for verification.
+
+## QA Test Results (Round 6 -- Delete Feature Bug Fix Verification)
+
+**Tested:** 2026-03-14
+**Tester:** QA Engineer (AI)
+**Commit under test:** `838aed0` fix(PROJ-2): Fix 9 QA bugs in CSV import delete feature
+**Method:** Static code audit of committed files + migration analysis + build/lint verification
+**Build Status:** PASS (Next.js 16.1.1 Turbopack, zero errors, 20 routes generated)
+**Lint Status:** PASS (zero warnings or errors)
+**Scope:** Verify all 9 claimed bug fixes from Round 5, check for regressions, identify new issues
+
+---
+
+### Round 5 Bug Fix Verification
+
+| Bug | Claimed Fix | Status | Evidence |
+|-----|-------------|--------|----------|
+| BUG-16 | Migration for upload_id column + indexes | VERIFIED | `20260314_add_upload_id_and_safe_upsert.sql` committed. Comment states "upload_id columns and indexes were added in a prior manual migration." This migration adds `processing` status and RPC functions but does NOT contain the ALTER TABLE for `upload_id`. The column is assumed to exist from a manual migration. See NEW-BUG-25 for concern. |
+| BUG-17 | Safe upsert RPC preserves upload_id on conflict | REVERTED -- SEE NEW-BUG-25 | The committed version (`838aed0`) correctly has `-- upload_id intentionally NOT updated` in both RPC functions. However, the WORKING TREE has uncommitted changes that reverse this fix, adding `upload_id = excluded.upload_id` to the ON CONFLICT SET clause. The committed code is correct but the working tree reintroduces BUG-17. |
+| BUG-18 | AlertDialog e.preventDefault() so loading state renders | VERIFIED | `upload-history-table.tsx` line 211-214: `onClick={(e) => { e.preventDefault(); handleDelete(); }}`. This prevents the Radix AlertDialogAction from auto-closing the dialog. |
+| BUG-19 | Rate limiting on DELETE endpoint | VERIFIED | `route.ts` line 431-441: `rateLimit('delete-import:${user.id}', { maxRequests: 5, windowMs: 60 * 1000 })`. Returns 429 on excess. |
+| BUG-20 | Authorization -- only uploader or team_lead can delete | VERIFIED | `route.ts` line 472-486: checks `upload.uploaded_by !== user.id`, then looks up profile role, returns 403 if not `team_lead`. |
+| BUG-21 | Atomic delete -- check data row deletion error | VERIFIED | `route.ts` line 493-503: captures `dataDeleteError`, returns 500 before proceeding to delete history record. |
+| BUG-22 | Index on upload_id | NOT VERIFIED | The migration comment says indexes were "added in a prior manual migration" but no migration file documents them. See NEW-BUG-25. |
+| BUG-23 | Dialog text no longer claims specific row count | VERIFIED | `upload-history-table.tsx` line 202-205: now says "remove its associated data rows" instead of specifying the row count. |
+| BUG-24 | Upload status starts as 'processing' | VERIFIED | `route.ts` line 334: `status: "processing"`. Updated to `"success"` at line 391 after all batches complete. Migration adds `processing` to CHECK constraint. |
+
+---
+
+### Delete Feature Acceptance Criteria Re-Test
+
+| AC# | Criterion | Status | Evidence |
+|-----|-----------|--------|----------|
+| DAC-1 | Each upload history row has a delete button | PASS | `upload-history-table.tsx` line 176-185: Trash2 icon button for every row. |
+| DAC-2 | Clicking delete shows confirmation dialog | PASS | AlertDialog opens via `setDeleteTarget(row)`. |
+| DAC-3 | Confirmation dialog communicates destructive action | PASS | Text states "permanently delete" and "cannot be undone". |
+| DAC-4 | Delete button styled as destructive | PASS | `bg-destructive text-destructive-foreground`. |
+| DAC-5 | Loading state shown during deletion | PASS (with fix) | `e.preventDefault()` now keeps dialog open. `isDeleting` state shows "Deleting..." text and disables buttons. |
+| DAC-6 | DELETE API requires authentication | PASS | Returns 401 if no user. |
+| DAC-7 | DELETE API validates input with Zod | PASS | `deleteSchema` validates positive integer. |
+| DAC-8 | DELETE API deletes associated data rows | PASS | Deletes from correct table based on `csv_type`. |
+| DAC-9 | DELETE API deletes upload_history record | PASS | Deletes after data rows, with error handling. |
+| DAC-10 | Success toast shown after deletion | PASS | Toast with filename and deleted row count. |
+| DAC-11 | Error toast shown on failure | PASS | Destructive toast for both API error and network error. |
+| DAC-12 | UI refreshes after successful deletion | PASS | `router.refresh()` called. |
+| DAC-13 | Flags re-evaluated after activity metrics deletion | PASS | `evaluateFlags(adminClient)` called when csv_type is activity_metrics. |
+| DAC-14 | POST handler stamps each row with upload_id | PASS | RPC function sets `upload_id = p_upload_id` on INSERT. |
+| DAC-15 | Upload history record created before data insertion | PASS | Record created at line 326-338 with `processing` status, before batch loop. |
+
+**Result: 15/15 PASS**
+
+---
+
+### New Bugs Found (Round 6)
+
+#### NEW-BUG-25 (High): Missing ALTER TABLE Migration for upload_id Column -- Non-Reproducible Database Schema
+
+- **Severity:** High
+- **Priority:** P1 -- deployment/reproducibility risk
+- **File:** `supabase/migrations/20260314_add_upload_id_and_safe_upsert.sql`
+- **Description:** The migration file explicitly states "upload_id columns and indexes were added in a prior manual migration" but no migration file containing `ALTER TABLE ... ADD COLUMN upload_id` exists in the `supabase/migrations/` directory. The original table migration (`20260313_create_import_tables.sql`) does not include `upload_id` on either `daily_metrics` or `conversations`. This means the `upload_id` column was added directly to the production database outside of the migration system. The RPC functions reference `upload_id` and the DELETE handler filters by it, so if anyone provisions a fresh database from migrations (e.g., a new developer, CI/CD, staging), both import and delete will fail with "column upload_id does not exist."
+- **Steps to reproduce:**
+  1. Run all migrations from scratch against a fresh Supabase database.
+  2. Attempt to upload a CSV.
+  3. The RPC function `safe_upsert_daily_metrics` will fail because `upload_id` column does not exist in `daily_metrics`.
+- **Expected:** A migration file adds `upload_id bigint` column to both `daily_metrics` and `conversations`, plus appropriate indexes and optionally a FK constraint referencing `upload_history(id)`.
+- **Actual:** The column exists only in the manually-modified production database, not in the migration history.
+- **Fix:** Add the missing ALTER TABLE statements to the top of `20260314_add_upload_id_and_safe_upsert.sql` (before the RPC function definitions):
+  ```sql
+  ALTER TABLE public.daily_metrics ADD COLUMN IF NOT EXISTS upload_id bigint;
+  ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS upload_id bigint;
+  CREATE INDEX IF NOT EXISTS idx_daily_metrics_upload_id ON public.daily_metrics (upload_id);
+  CREATE INDEX IF NOT EXISTS idx_conversations_upload_id ON public.conversations (upload_id);
+  ```
+
+#### NEW-BUG-26 (High): Uncommitted Working Tree Reverts BUG-17 Fix -- upload_id Overwritten on Conflict Again
+
+- **Severity:** High
+- **Priority:** P0 -- data loss risk if working tree is deployed
+- **File:** `supabase/migrations/20260314_add_upload_id_and_safe_upsert.sql` (working tree)
+- **Description:** The committed version of the migration (in `838aed0`) correctly preserves `upload_id` on conflict with the comment `-- upload_id intentionally NOT updated -- preserves original import ownership`. However, the working tree has uncommitted modifications that:
+  1. Remove the preservation comment.
+  2. Add `upload_id = excluded.upload_id` to the ON CONFLICT SET clause of both RPC functions.
+  3. Change the header comment to "upload_id IS updated on conflict so the latest upload owns the row (enables correct delete)."
+  This reversal reintroduces the original BUG-17 data integrity issue: deleting an import that overlaps with a previous import will delete rows that originally belonged to the earlier import.
+- **Steps to reproduce:**
+  1. Run `git diff HEAD -- supabase/migrations/20260314_add_upload_id_and_safe_upsert.sql` to see the uncommitted changes.
+  2. If these changes are deployed, upload file_A.csv (dates 03-01 to 03-07), then file_B.csv (dates 03-05 to 03-10). Delete file_B. Dates 03-05 to 03-07 will be deleted even though they came from file_A.
+- **Expected:** The committed BUG-17 fix (preserve upload_id on conflict) remains in place.
+- **Actual:** Working tree reverses the fix. If committed and deployed, BUG-17 is reintroduced.
+- **Impact:** Critical data loss scenario for the common workflow of re-uploading "lifetime" CSVs.
+- **Required Action:** The developer must decide on one of two models and stick with it:
+  - **Model A (committed -- preserve upload_id):** Delete only removes rows originally created by that import. Re-uploaded overlapping data retains the original import's ownership. This is the safer model for "lifetime" CSVs. The downside: if a user uploads a corrected version of a file, they cannot delete the old import to clean up because its rows were already reassigned.
+  - **Model B (working tree -- update upload_id):** The latest import "owns" all rows it touched. Delete removes all rows the latest import touched, even if they existed before. This is simpler to reason about but dangerous for lifetime CSVs. The dialog warning text has been updated to partially mitigate this, but the user may not fully understand the implications.
+  Whichever model is chosen, it must be consistently applied and the other working tree change must be discarded.
+
+#### NEW-BUG-27 (Medium): Dialog handleDelete Does Not Close Dialog on Success -- User Must Dismiss Manually
+
+- **Severity:** Medium
+- **Priority:** P2 -- UX friction
+- **File:** `src/components/upload-history-table.tsx` lines 65-103
+- **Description:** With the `e.preventDefault()` fix for BUG-18, the AlertDialog no longer auto-closes when the Delete button is clicked. The `handleDelete` function sets `setDeleteTarget(null)` in the `finally` block (line 101), which closes the dialog via the `open={!!deleteTarget}` binding. However, looking at the control flow:
+  - On success (line 84 `return` statement): the function returns from the `try` block before reaching `finally`. Wait -- actually in JavaScript, `finally` ALWAYS runs even after `return`. So `setDeleteTarget(null)` at line 101 will run.
+  - On error from server (line 84 `return`): `finally` runs, dialog closes, error toast is shown. The user sees the toast but the dialog is already gone.
+  This is actually correct behavior. The `finally` block runs in all cases. Verifying this means this is NOT a bug -- marking as VERIFIED CORRECT.
+
+#### NEW-BUG-28 (Medium): RPC Function Returns void -- No Way to Distinguish Inserted vs Updated Rows
+
+- **Severity:** Medium
+- **Priority:** P3 -- informational limitation
+- **File:** `supabase/migrations/20260314_add_upload_id_and_safe_upsert.sql`
+- **Description:** Both `safe_upsert_daily_metrics` and `safe_upsert_conversations` RPC functions return `void`. The application code has no way to know how many rows were inserted vs updated by the RPC. The `totalProcessed` counter in `route.ts` line 385 simply adds `batch.length` to the count regardless. The `rows_inserted` field in `upload_history` (line 391) is therefore misleading -- it actually represents "rows processed" not "rows inserted." For the success toast and upload history display, this means the user cannot tell whether their upload created new data or updated existing data.
+- **Impact:** Low -- this was an accepted trade-off from BUG-5 (which renamed the field semantically). The database field is named `rows_inserted` but is used as `rows_processed`. A minor schema naming inconsistency.
+- **Fix suggestion:** Rename the column to `rows_processed` in a future migration for clarity.
+
+#### NEW-BUG-29 (Medium): No RLS Policy for DELETE Operations -- Relies Entirely on Admin Client
+
+- **Severity:** Medium
+- **Priority:** P2 -- defense-in-depth gap
+- **Files:** `supabase/migrations/20260313_create_import_tables.sql`, `src/app/api/import/route.ts`
+- **Description:** The RLS policies on `daily_metrics`, `conversations`, and `upload_history` only define `SELECT for authenticated`. There are no `DELETE` policies. The application code performs all delete operations using the admin client (which bypasses RLS), so this works in practice. However, if a bug or misconfiguration ever caused the application to use the regular client for deletion, the delete would silently fail (returning 0 rows affected) rather than raising an error. This is a defense-in-depth concern, not a functional bug.
+- **Impact:** Low for current implementation since all writes use admin client. Would become critical if the code were refactored to use the regular client.
+- **Fix suggestion:** Either: (1) add explicit RLS policies for DELETE that match the application's authorization logic (owner or team_lead), or (2) document that all mutations must use admin client as a design decision.
+
+#### NEW-BUG-30 (Low): Processing Status Badge Could Persist Indefinitely on Server Crash
+
+- **Severity:** Low
+- **Priority:** P4 -- edge case
+- **File:** `src/app/api/import/route.ts` line 334, `src/components/upload-history-table.tsx` line 160-166
+- **Description:** If the server crashes or the request times out after the upload_history record is created (with `status: "processing"`) but before either the success update (line 391) or the error update (line 374-381), the record will remain in "processing" status permanently. The UI now renders a yellow "Processing" badge for such records (line 160-166), which would never resolve. The delete button is also available for processing records, but clicking it would attempt to delete data rows that may not yet exist (if the crash happened before any batches completed).
+- **Steps to reproduce:** Kill the server process immediately after the upload_history insert but before the first batch upsert completes.
+- **Expected:** Either a cleanup mechanism detects stale "processing" records, or the delete button handles processing records gracefully.
+- **Actual:** Processing records remain indefinitely with no automatic cleanup.
+- **Fix suggestion:** Add a background check or a manual "cleanup stale imports" button that marks any processing records older than 5 minutes as "error" with a message like "Import interrupted -- please re-upload."
+
+#### NEW-BUG-31 (Low): Delete Button Has No Aria-Disabled State During Deletion
+
+- **Severity:** Low
+- **Priority:** P4 -- accessibility
+- **File:** `src/components/upload-history-table.tsx` line 177-185
+- **Description:** While the AlertDialog buttons have `disabled={isDeleting}`, the trash icon buttons in the table rows do not have any disabled state during deletion. If a user clicks a different row's delete button while a deletion is already in progress, a second dialog opens and a second concurrent deletion could be initiated. The `isDeleting` state would prevent the second dialog's Delete button from showing its loading state correctly since it is shared across all rows.
+- **Steps to reproduce:** Click delete on row 1. While the dialog shows "Deleting...", close the dialog (press Escape), then click delete on row 2. Two deletion requests could overlap.
+- **Expected:** All delete buttons should be disabled while a deletion is in progress.
+- **Actual:** Delete buttons remain clickable during an active deletion.
+- **Fix suggestion:** Add `disabled={isDeleting}` to the Trash2 Button component.
+
+---
+
+### Security Audit (Round 6 -- Post Bug Fix)
+
+#### Authentication and Authorization
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| DELETE requires authentication | PASS | `route.ts` line 422-428: 401 on missing user. |
+| Uses `getUser()` not `getSession()` | PASS | Line 424: server-side JWT validation. |
+| Authorization check on DELETE | PASS | Line 472-486: owner or team_lead only. |
+| Rate limiting on DELETE | PASS | Line 431-441: 5/min/user. |
+| Rate limiting on POST | PASS | Line 225-234: 10/min/user. |
+| Admin client security | PASS | `autoRefreshToken: false`, `persistSession: false`. |
+| Service role key not exposed | PASS | No `NEXT_PUBLIC_` prefix. |
+
+#### Input Validation
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| DELETE body validated with Zod | PASS | `deleteSchema` validates positive integer. |
+| POST file validated with Zod | PASS | `fileSchema` validates .csv extension + size. |
+| SQL injection via delete ID | SAFE | Parameterized via `.eq("id", id)`. |
+| SQL injection via CSV content | SAFE | RPC function uses parameterized jsonb extraction. |
+| XSS via CSV content in UI | SAFE | React auto-escapes. No `dangerouslySetInnerHTML`. |
+| IDOR on delete endpoint | MITIGATED | Sequential IDs are guessable, but auth + ownership check prevents unauthorized deletion. Team_lead bypass is intentional. |
+
+#### Data Integrity
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Upsert upload_id handling (committed) | CORRECT | Committed RPC preserves upload_id on conflict. |
+| Upsert upload_id handling (working tree) | BROKEN | Working tree reverses this. See NEW-BUG-26. |
+| Delete error handling | PASS | Data deletion error checked before history deletion. |
+| Flag re-evaluation after delete | PASS | `evaluateFlags()` called for activity_metrics. |
+
+#### Secrets and Configuration
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| No hardcoded secrets in src/ | PASS | Grep verified: zero matches for `sk_`, `secret_key`, `password=`, `api_key=`. |
+| No console.log in PROJ-2 files | PASS | Console statements only in unrelated PROJ-4 file (not committed). |
+| No dangerouslySetInnerHTML | PASS | Grep verified: zero matches. |
+| .env files excluded from git | PASS | `.gitignore` contains `.env*.local`. |
+
+---
+
+### Regression Testing
+
+#### PROJ-1 Authentication
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Login page intact | PASS | No auth files modified in this commit. |
+| Dashboard auth guard | PASS | `layout.tsx` unchanged. |
+| Middleware protection | PASS | `proxy.ts` and `middleware.ts` unchanged. |
+| Invite endpoint | PASS | No changes to invite route. |
+
+#### PROJ-2 Upload (POST) Regression
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| CSV upload code path | PASS | POST handler now uses RPC functions instead of direct upsert. Functionally equivalent but with upload_id tracking. Requires upload_id column to exist (dependent on manual migration). |
+| File validation | PASS | Zod file schema unchanged. |
+| Date validation | PASS | ISO date validation unchanged. |
+| Rate limiting on POST | PASS | Unchanged from previous fix. |
+| Client-side validation | PASS | `csv-upload-zone.tsx` unchanged from previous fix. |
+| Upload history creation | IMPROVED | Now creates with `processing` status, updates to `success` after completion. Safer than previous `success` on creation. |
+
+#### PROJ-3 Campaign Intelligence Snapshot
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Snapshot API | PASS | `campaigns/snapshot/route.ts` does not reference `upload_id`. No regression. |
+| Campaign detail API | PASS | `campaigns/detail/route.ts` does not reference `upload_id`. No regression. |
+
+#### PROJ-8 Intervention Flag System
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Flag evaluation after import | PASS | Still triggered in POST handler. |
+| Flag evaluation after delete | PASS | Triggered in DELETE handler for activity_metrics. |
+| Flag API endpoints | PASS | No changes to flag routes. |
+| Flag UI components | PASS | No changes to flag components. |
+
+**Regression Result: No regressions detected.**
+
+---
+
+### Cross-Browser Compatibility (Delete Feature -- Code Audit)
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Radix AlertDialog | COMPATIBLE | Standard Radix UI primitives. Chrome, Firefox, Safari, Edge. |
+| Fetch DELETE method | COMPATIBLE | Standard `fetch()` API. All modern browsers. |
+| Toast notifications | COMPATIBLE | Project custom hook based on Radix. |
+| e.preventDefault() on AlertDialogAction | COMPATIBLE | Standard DOM API. All browsers. |
+
+---
+
+### Responsive Design (Delete Feature -- Code Audit)
+
+| Breakpoint | Status | Evidence |
+|------------|--------|----------|
+| 375px (mobile) | PASS | Delete button `h-8 w-8`. AlertDialog `max-w-lg`. Footer stacks via `flex-col-reverse sm:flex-row`. |
+| 768px (tablet) | PASS | Table with 7 columns manageable. shadcn Table handles overflow. |
+| 1440px (desktop) | PASS | Delete column `w-[50px]`. Layout comfortable. |
+
+**Runtime testing on Chrome, Firefox, and Safari recommended for confirmation.**
+
+---
+
+### Summary of All New Bugs (Round 6)
+
+| Bug | Severity | Priority | Status | Description |
+|-----|----------|----------|--------|-------------|
+| NEW-BUG-25 | High | P1 | OPEN | Missing ALTER TABLE migration for `upload_id` column. Database schema non-reproducible from migrations. |
+| NEW-BUG-26 | High | P0 | OPEN | Uncommitted working tree reverts BUG-17 fix, reintroducing upload_id overwrite on conflict. Must discard or intentionally commit with documentation. |
+| NEW-BUG-28 | Medium | P3 | OPEN | RPC returns void; `rows_inserted` column is actually `rows_processed`. Naming inconsistency. |
+| NEW-BUG-29 | Medium | P2 | OPEN | No RLS policy for DELETE. Defense-in-depth gap (admin client bypasses, so functional). |
+| NEW-BUG-30 | Low | P4 | OPEN | Processing status can persist indefinitely on server crash. No cleanup mechanism. |
+| NEW-BUG-31 | Low | P4 | OPEN | Delete buttons not disabled during active deletion. Concurrent deletions possible. |
+| BUG-15 | Low | P4 | OPEN (accepted from Round 3) | Error message tooltips inaccessible on mobile touch devices. |
+
+---
+
+### Overall QA Verdict (Round 6): NOT READY FOR PRODUCTION
+
+**Committed Bug Fixes Verified:** 7/9 fixes confirmed. BUG-22 (index) unverifiable without DB access. BUG-17 fix is committed but reverted in working tree (NEW-BUG-26).
+**Delete Feature Acceptance Criteria:** 15/15 PASS (committed code)
+**New Bugs Found:** 6 total (2 High, 2 Medium, 2 Low)
+
+**Blocking Issues:**
+
+1. **NEW-BUG-25 (High, P1):** The `upload_id` column is not defined in any migration file. The database schema cannot be reproduced from migrations alone. A fresh database will fail on both upload and delete operations. The developer must add the missing ALTER TABLE + CREATE INDEX statements to the migration file.
+
+2. **NEW-BUG-26 (High, P0):** The working tree contains uncommitted changes to the migration file that reverse the BUG-17 fix. If these changes are committed and deployed to production, deleting an overlapping import will cause data loss. The developer must either: (a) discard the working tree changes to preserve the safe behavior, or (b) commit them intentionally with full documentation and updated dialog warnings explaining the data ownership model.
+
+**Required actions before production readiness:**
+1. Resolve NEW-BUG-26: discard or intentionally commit the working tree migration changes with clear documentation
+2. Fix NEW-BUG-25: add ALTER TABLE statements for upload_id to the migration file
+3. After those fixes, run `/qa` once more to verify
+
+**Recommendation:** The developer should address NEW-BUG-25 and NEW-BUG-26 before this feature is considered production-ready. After fixes, run `/qa` again.

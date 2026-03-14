@@ -322,6 +322,13 @@ export async function POST(request: NextRequest) {
 
   const adminClient = createAdminClient();
 
+  // BUG-30: Clean up stale "processing" records (older than 5 min = likely crashed)
+  await adminClient
+    .from("upload_history")
+    .update({ status: "error", error_message: "Upload interrupted — marked as failed automatically." })
+    .eq("status", "processing")
+    .lt("uploaded_at", new Date(Date.now() - 5 * 60 * 1000).toISOString());
+
   // 7. Create upload_history record with 'processing' status
   const { data: historyRecord, error: historyError } = await adminClient
     .from("upload_history")
@@ -329,8 +336,7 @@ export async function POST(request: NextRequest) {
       filename: file.name,
       csv_type: csvType,
       row_count: rows.length,
-      rows_inserted: 0,
-      rows_updated: 0,
+      rows_processed: 0,
       status: "processing",
       uploaded_by: user.id,
     })
@@ -374,7 +380,7 @@ export async function POST(request: NextRequest) {
       await adminClient
         .from("upload_history")
         .update({
-          rows_inserted: totalProcessed,
+          rows_processed: totalProcessed,
           status: "error",
           error_message: errorDetail,
         })
@@ -388,7 +394,7 @@ export async function POST(request: NextRequest) {
   // 9. Mark upload as successful with final count
   await adminClient
     .from("upload_history")
-    .update({ rows_inserted: totalProcessed, status: "success" })
+    .update({ rows_processed: totalProcessed, status: "success" })
     .eq("id", uploadId);
 
   // 10. Run flag evaluation after activity metrics import
