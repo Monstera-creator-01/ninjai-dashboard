@@ -35,26 +35,31 @@ const navItems = [
     title: "Dashboard",
     href: "/dashboard",
     icon: LayoutDashboard,
+    exact: true,
   },
   {
     title: "Data Import",
     href: "/dashboard/import",
     icon: Upload,
+    exact: true,
   },
   {
     title: "Campaigns",
     href: "/dashboard/campaigns",
     icon: BarChart3,
+    exact: false,
   },
   {
     title: "Health Review",
     href: "/dashboard/health",
     icon: Activity,
+    exact: true,
   },
   {
     title: "Interventions",
     href: "/dashboard/interventions",
     icon: AlertTriangle,
+    exact: true,
   },
 ];
 
@@ -81,7 +86,11 @@ export function AppSidebar({ profile, userEmail }: AppSidebarProps) {
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton
                     asChild
-                    isActive={pathname === item.href}
+                    isActive={
+                      item.exact
+                        ? pathname === item.href
+                        : pathname.startsWith(item.href)
+                    }
                     tooltip={item.title}
                   >
                     <Link href={item.href}>
