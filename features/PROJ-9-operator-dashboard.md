@@ -1,6 +1,6 @@
 # PROJ-9: Operator Dashboard (Layer 7)
 
-## Status: In Review
+## Status: Deployed
 **Created:** 2026-03-13
 **Last Updated:** 2026-03-14
 
@@ -367,4 +367,16 @@ All other packages (Recharts, Zod, shadcn/ui components) are already installed.
 ### Overall Result: **PASS** (all ACs pass, 1 bug found and fixed)
 
 ## Deployment
-_To be added by /deploy_
+
+**Date:** 2026-03-14
+**Deployed by:** Claude Code (automated deploy)
+**Commit:** `2b21c1b` — `feat(PROJ-9): Add Operator Dashboard (Layer 7)`
+**Platform:** Vercel (auto-deploy on push to main)
+**Route:** `/dashboard/operator`
+
+### Pre-Deployment Checklist
+- [x] `npm run build` — PASS (20.8s, Turbopack)
+- [x] `npm run lint` — PASS (no warnings)
+- [x] QA approved — all 7 ACs pass, 0 open bugs
+- [x] No secrets in code
+- [x] All code committed and pushed

@@ -20,7 +20,7 @@
 | PROJ-6 | Segment Comparison Analysis (Layer 4) | Planned | [PROJ-6-segment-comparison.md](PROJ-6-segment-comparison.md) | 2026-03-13 |
 | PROJ-7 | Account Manager Campaign Summary (Layer 5) | Planned | [PROJ-7-account-manager-summary.md](PROJ-7-account-manager-summary.md) | 2026-03-13 |
 | PROJ-8 | Campaign Intervention Flag System (Layer 6) | Deployed | [PROJ-8-intervention-flag-system.md](PROJ-8-intervention-flag-system.md) | 2026-03-13 |
-| PROJ-9 | Operator Dashboard (Layer 7) | In Review | [PROJ-9-operator-dashboard.md](PROJ-9-operator-dashboard.md) | 2026-03-13 |
+| PROJ-9 | Operator Dashboard (Layer 7) | Deployed | [PROJ-9-operator-dashboard.md](PROJ-9-operator-dashboard.md) | 2026-03-13 |
 
 <!-- Add features above this line -->
 
